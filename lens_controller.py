@@ -94,15 +94,16 @@ class GoogleLensController:
 
     def _scrape_visual_matches(self):
         results = []
-
         try:
             # Wait until any images inside jsslot load
-            self.page.wait_for_selector("div[jsslot] img", timeout=15000)
+            print (self.page.url)
+            #self.page.wait_for_selector("div[jsslot] img", timeout=15000)
+            self.page.wait_for_load_state("networkidle", timeout=15000)
+            time.sleep(2)
         except Exception:
             return results
 
         containers = self.page.query_selector_all("div[id=search] div:has(div[jsslot])")
-
         seen_srcs = set()
 
         for container in containers:
@@ -162,6 +163,7 @@ class GoogleLensController:
             if any(domain in link for domain in ALLOWED_DOMAINS):
                 filtered.append(item)
         return filtered
+    
     def extract_scott_numbers(self, results):
         # Store list of scores per candidate
         candidate_scores = defaultdict(list)
@@ -231,7 +233,7 @@ class GoogleLensController:
 
 
 
-    def close(self):
+    def shutdown(self):
         self.context.close()
         self.browser.close()
         self.playwright.stop()

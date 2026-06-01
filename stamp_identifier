@@ -1,0 +1,408 @@
+import cv2
+import tkinter as tk
+from tkinter import ttk
+from PIL import Image, ImageTk
+from datetime import datetime
+import os
+import threading
+import requests
+import webbrowser
+import io
+
+from lens_controller import GoogleLensController
+import base64
+import threading
+import queue
+
+lens_command_queue = queue.Queue()
+lens_result_queue = queue.Queue()
+
+
+# ---------------- CONFIG ----------------
+IMAGE_DIR = "storage/images"
+THUMB_SIZE = (120, 120)
+SIDEBAR_WIDTH = THUMB_SIZE[0] + 20
+
+# ---------------------------------------
+
+
+class LensWorker(threading.Thread):
+    def __init__(self, command_q, result_q):
+        super().__init__(daemon=True)
+        self.command_q = command_q
+        self.result_q = result_q
+        self.controller = None
+
+    def run(self):
+        # IMPORTANT: Playwright is created inside this thread
+        self.controller = GoogleLensController()
+
+        while True:
+            command = self.command_q.get()
+
+            if command["type"] == "shutdown":
+                break
+
+            if command["type"] == "search":
+                image_path = command["image_path"]
+                request_id = command["id"]
+
+                try:
+                    results = self.controller.search(image_path)
+                    self.result_q.put({
+                        "id": request_id,
+                        "results": results,
+                        "error": None
+                    })
+                except Exception as e:
+                    self.result_q.put({
+                        "id": request_id,
+                        "results": None,
+                        "error": str(e)
+                    })
+
+        self.controller.close()
+
+
+class StampIdentifierApp:
+    def __init__(self, root):
+        self.root = root
+        self.root.title("Stamp Identifier")
+        self.root.geometry("1000x650")
+        self.root.minsize(900, 600)
+
+        os.makedirs(IMAGE_DIR, exist_ok=True)
+
+        # Camera
+        self.cap = cv2.VideoCapture(1)
+        if not self.cap.isOpened():
+            raise RuntimeError("Could not open webcam")
+
+        self.current_frame = None
+        self.current_image_path = None
+        self.preview_mode = "live"
+
+        self._hovering_history = False
+        self._hovering_results = False
+        self.root.bind_all("<MouseWheel>", self._on_mousewheel)
+
+
+        self._build_layout()
+        self._load_history()
+        self._set_live_mode()
+
+        self.update_frame()
+        self.root.protocol("WM_DELETE_WINDOW", self.on_close)
+
+        self.request_counter = 0
+
+        self.lens_worker = LensWorker(
+            lens_command_queue,
+            lens_result_queue
+        )
+        self.lens_worker.start()
+
+        self.poll_lens_results()
+
+
+
+    # ---------- Layout ----------
+    def _build_layout(self):
+        self.root.columnconfigure(0, weight=1)
+        self.root.columnconfigure(1, weight=0)
+        self.root.rowconfigure(0, weight=1)
+
+        # ---------- Preview ----------
+        self.preview_label = ttk.Label(self.root)
+        self.preview_label.grid(row=0, column=0, sticky="nsew", padx=10, pady=10)
+
+        # ---------- History Sidebar ----------
+        history_frame = ttk.Frame(self.root, width=SIDEBAR_WIDTH)
+        history_frame.grid(row=0, column=1, sticky="ns", padx=(0, 10), pady=10)
+        history_frame.grid_propagate(False)
+
+        ttk.Label(history_frame, text="History").pack(anchor="w")
+
+        self.history_canvas = tk.Canvas(history_frame, width=SIDEBAR_WIDTH)
+        self.history_scrollbar = ttk.Scrollbar(history_frame, orient="vertical", command=self.history_canvas.yview)
+        self.history_inner = ttk.Frame(self.history_canvas)
+
+        self.history_inner.bind(
+            "<Configure>",
+            lambda e: self.history_canvas.configure(scrollregion=self.history_canvas.bbox("all"))
+        )
+
+        self.history_canvas.create_window((0, 0), window=self.history_inner, anchor="nw")
+        self.history_canvas.configure(yscrollcommand=self.history_scrollbar.set)
+
+        self.history_canvas.pack(side="left", fill="both", expand=True)
+        self.history_scrollbar.pack(side="right", fill="y")
+
+        # ---------- Controls ----------
+        controls = ttk.Frame(self.root)
+        controls.grid(row=1, column=0, columnspan=2, pady=5)
+
+        self.capture_btn = ttk.Button(controls, text="Capture Image", command=self.capture_image)
+        self.camera_btn = ttk.Button(controls, text="Camera", command=self.show_camera)
+        self.search_btn = ttk.Button(controls, text="Search", command=self.search_image)
+
+        self.capture_btn.pack()
+        self.camera_btn.pack_forget()
+        self.search_btn.pack_forget()
+
+        # ---------- Results Panel ----------
+        results_container = ttk.Frame(self.root)
+        results_container.grid(row=2, column=0, columnspan=2, sticky="nsew", padx=10)
+
+        self.results_canvas = tk.Canvas(results_container, height=THUMB_SIZE[1]+60)
+        self.results_canvas.pack(side="top", fill="x", expand=True)
+
+        self.results_scrollbar = ttk.Scrollbar(results_container, orient="horizontal", command=self.results_canvas.xview)
+        self.results_scrollbar.pack(side="bottom", fill="x")
+
+        self.results_canvas.configure(xscrollcommand=self.results_scrollbar.set)
+
+        # Inner frame for buttons
+        self.results_frame = ttk.Frame(self.results_canvas)
+        self.results_canvas.create_window((0, 0), window=self.results_frame, anchor="nw")
+
+        # Update scrollregion when content changes
+        self.results_frame.bind(
+            "<Configure>",
+            lambda e: self.results_canvas.configure(scrollregion=self.results_canvas.bbox("all"))
+        )
+
+        self.root.columnconfigure(0, weight=1)
+        self.root.columnconfigure(1, weight=0)
+        self.root.rowconfigure(0, weight=1)
+
+        self.preview_label = ttk.Label(self.root)
+        self.preview_label.grid(row=0, column=0, sticky="nsew", padx=10, pady=10)
+
+
+        controls = ttk.Frame(self.root)
+        controls.grid(row=1, column=0, columnspan=2, pady=5)
+
+        self.capture_btn = ttk.Button(controls, text="Capture Image", command=self.capture_image)
+        self.camera_btn = ttk.Button(controls, text="Camera", command=self.show_camera)
+        self.search_btn = ttk.Button(controls, text="Search", command=self.search_image)
+
+        self.capture_btn.pack()
+        self.camera_btn.pack_forget()
+        self.search_btn.pack_forget()
+
+        # Results panel with horizontal scrolling
+        results_container = ttk.Frame(self.root)
+        results_container.grid(row=2, column=0, columnspan=2, sticky="nsew", padx=10)
+
+        self.results_canvas = tk.Canvas(results_container, height=THUMB_SIZE[1]+60)  # Adjust height for text under buttons
+        self.results_canvas.pack(side="top", fill="x", expand=True)
+
+        self.results_scrollbar = ttk.Scrollbar(results_container, orient="horizontal", command=self.results_canvas.xview)
+        self.results_scrollbar.pack(side="bottom", fill="x")
+
+        self.results_canvas.configure(xscrollcommand=self.results_scrollbar.set)
+
+        # Inner frame where buttons will go
+        self.results_frame = ttk.Frame(self.results_canvas)
+        self.results_canvas.create_window((0, 0), window=self.results_frame, anchor="nw")
+
+        # Update scrollregion whenever content changes
+        self.results_frame.bind("<Configure>", lambda e: self.results_canvas.configure(scrollregion=self.results_canvas.bbox("all")))
+
+        self.results_canvas.bind("<Enter>", lambda e: self.results_canvas.focus_set())
+
+              
+        # --- Hover tracking only ---
+        self.history_canvas.bind("<Enter>", lambda e: self._set_hover("history", True))
+        self.history_canvas.bind("<Leave>", lambda e: self._set_hover("history", False))
+
+        self.results_canvas.bind("<Enter>", lambda e: self._set_hover("results", True))
+        self.results_canvas.bind("<Leave>", lambda e: self._set_hover("results", False))
+
+    def _on_mousewheel(self, event):
+        if not hasattr(event, "delta"):
+            return
+
+        delta = int(-event.delta / 120)
+
+        if self._hovering_history:
+            self.history_canvas.yview_scroll(delta, "units")
+        elif self._hovering_results:
+            self.results_canvas.xview_scroll(delta, "units")
+
+
+    # ---------- Preview ----------
+    def update_frame(self):
+        if self.preview_mode == "live":
+            ret, frame = self.cap.read()
+            if ret:
+                self.current_frame = frame
+                self._display_frame(frame)
+        self.root.after(15, self.update_frame)
+
+    def _display_frame(self, frame):
+        w = self.preview_label.winfo_width()
+        h = self.preview_label.winfo_height()
+        if w < 10 or h < 10:
+            return
+
+        fh, fw, _ = frame.shape
+        scale = min(w / fw, h / fh)
+        resized = cv2.resize(frame, (int(fw * scale), int(fh * scale)))
+
+        rgb = cv2.cvtColor(resized, cv2.COLOR_BGR2RGB)
+        img = ImageTk.PhotoImage(Image.fromarray(rgb))
+        self.preview_label.imgtk = img
+        self.preview_label.configure(image=img)
+
+    # ---------- Modes ----------
+    def _set_live_mode(self):
+        self.preview_mode = "live"
+        self.capture_btn.pack()
+        self.camera_btn.pack_forget()
+        self.search_btn.pack_forget()
+
+    def _set_image_mode(self):
+        self.preview_mode = "image"
+        self.capture_btn.pack_forget()
+        self.camera_btn.pack(side="left", padx=5)
+        self.search_btn.pack(side="left", padx=5)
+
+    # ---------- Actions ----------
+    def capture_image(self):
+        if self.current_frame is None:
+            return
+
+        ts = datetime.now().strftime("%Y%m%d_%H%M%S")
+        path = os.path.join(IMAGE_DIR, f"stamp_{ts}.jpg")
+
+        cv2.imwrite(path, self.current_frame)
+        self._add_history_thumbnail(path)
+
+        # Switch to image mode
+        self.current_image_path = path
+        self._set_image_mode()
+
+        # Display the captured image
+        image = cv2.imread(path)
+        if image is not None:
+            self._display_frame(image)
+
+        # Automatically trigger search
+        self.search_image()
+
+    def show_image(self, path):
+        image = cv2.imread(path)
+        if image is None:
+            return
+
+        self.current_image_path = path
+        self._set_image_mode()
+        self._display_frame(image)
+
+    def show_camera(self):
+        self._set_live_mode()
+
+    # ---------- History ----------
+    def _load_history(self):
+        for f in sorted(os.listdir(IMAGE_DIR), reverse=True):
+            if f.lower().endswith(".jpg"):
+                self._add_history_thumbnail(os.path.join(IMAGE_DIR, f), prepend=False)
+
+    def _add_history_thumbnail(self, path, prepend=True):
+        img = Image.open(path)
+        img.thumbnail(THUMB_SIZE)
+        tk_img = ImageTk.PhotoImage(img)
+
+        lbl = ttk.Label(self.history_inner, image=tk_img, cursor="hand2")
+        lbl.image = tk_img
+        lbl.bind("<Button-1>", lambda e, p=path: self.show_image(p))
+        lbl.pack(anchor="w", pady=5)
+
+    # ---------- Google Search ----------
+    def search_image(self):
+        for w in self.results_frame.winfo_children():
+            w.destroy()
+
+        if not self.current_image_path:
+            return
+
+        self.request_counter += 1
+        request_id = self.request_counter
+
+        lens_command_queue.put({
+            "type": "search",
+            "id": request_id,
+            "image_path": self.current_image_path
+        })
+
+
+    def poll_lens_results(self):
+        try:
+            while True:
+                msg = lens_result_queue.get_nowait()
+
+                if msg["error"]:
+                    print("Lens search failed:", msg["error"])
+                    continue
+
+                self.render_results(msg["results"])
+
+        except queue.Empty:
+            pass
+
+        self.root.after(100, self.poll_lens_results)
+
+
+
+
+    def render_results(self, results):
+        for w in self.results_frame.winfo_children():
+            w.destroy()
+
+        if not results:
+            ttk.Label(self.results_frame, text="No visual matches found.").pack()
+            return
+
+        for item in results:
+            try:
+                thumb_url = item["thumbnail_url"]
+                if thumb_url.startswith("data:"):
+                    header, encoded = thumb_url.split(",", 1)
+                    thumb_data = base64.b64decode(encoded)
+                else:
+                    thumb_data = requests.get(thumb_url, timeout=10).content
+
+                img = Image.open(io.BytesIO(thumb_data))
+                tk_img = ImageTk.PhotoImage(img)
+
+                btn = ttk.Button(
+                    self.results_frame,
+                    image=tk_img,
+                    text=item.get("title", ""),
+                    compound="top",
+                    command=lambda l=item["link"]: webbrowser.open(l)
+                )
+                btn.image = tk_img
+                btn.pack(side="left", padx=10)
+
+            except Exception as e:
+                print("Failed to render Lens result:", e)
+
+
+
+
+    def on_close(self):
+        self.cap.release()
+
+        lens_command_queue.put({"type": "shutdown"})
+
+        self.root.destroy()
+
+
+
+if __name__ == "__main__":
+    root = tk.Tk()
+    app = StampIdentifierApp(root)
+    root.mainloop()
