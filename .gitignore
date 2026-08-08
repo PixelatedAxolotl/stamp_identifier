@@ -1,4 +1,8 @@
 /storage/images/
+/storage/incoming/
+ui/assets/
+stamp_phone/
+/backups/
 
 # Byte-compiled / optimized / DLL files
 __pycache__/
