@@ -1,0 +1,26 @@
+# Stamp Identifier Application Requirements
+
+## Core Dependencies
+PySide6           
+SQLAlchemy
+alembic
+psycopg2-binary
+playwright
+opencv-python
+Pillow
+winloop
+psutil
+pycountry
+python-dotenv
+requests
+
+## Development
+pytest
+pytest-qt
+black
+flake8
+
+## Notes
+- Requires Python 3.9+
+- PostgreSQL 12+ recommended
+- Playwright requires additional browser binary installation (run: playwright install)
