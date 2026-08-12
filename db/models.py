@@ -2,6 +2,7 @@ from sqlalchemy import (
     Boolean,
     Column,
     Integer,
+    Numeric,
     Table,
     Text,
     DateTime,
@@ -121,6 +122,57 @@ class StampCopy(Base):
     notes     = Column(String, nullable=True)
 
     stamp = relationship("Stamp", back_populates="copies")
+
+    # Where/how this copy (a batch acquired together) was obtained. One origin
+    # per copy; split copies when they came from different places.
+    origin = relationship(
+        "StampCopyOrigin",
+        back_populates="copy",
+        uselist=False,
+        cascade="all, delete-orphan",
+    )
+
+
+class OriginLocation(Base):
+    """Where a copy was acquired, e.g. 'Albany Stamp Show'. Distinct from
+    PhysicalLocation, which is where a stamp is stored (album/binder)."""
+    __tablename__ = "origin_locations"
+
+    id   = Column(Integer, primary_key=True, autoincrement=True)
+    name = Column(String, unique=True, nullable=False)
+
+    origins = relationship("StampCopyOrigin", back_populates="location")
+
+
+class Dealer(Base):
+    """A seller/source a copy was acquired from."""
+    __tablename__ = "dealers"
+
+    id   = Column(Integer, primary_key=True, autoincrement=True)
+    name = Column(String, unique=True, nullable=False)
+
+    origins = relationship("StampCopyOrigin", back_populates="dealer")
+
+
+class StampCopyOrigin(Base):
+    """Provenance for a single StampCopy: where and how it was acquired."""
+    __tablename__ = "stamp_copy_origins"
+
+    id            = Column(Integer, primary_key=True, autoincrement=True)
+    copy_id       = Column(Integer, ForeignKey("stamp_copies.id", ondelete="CASCADE"),
+                           nullable=False, unique=True)
+    location_id   = Column(Integer, ForeignKey("origin_locations.id", ondelete="SET NULL"),
+                           nullable=True)
+    dealer_id     = Column(Integer, ForeignKey("dealers.id", ondelete="SET NULL"),
+                           nullable=True)
+    method        = Column(String, nullable=True)   # bought / given / traded / ...
+    price         = Column(Numeric(10, 2), nullable=True)
+    acquired_date = Column(DateTime, nullable=True)
+    notes         = Column(String, nullable=True)
+
+    copy     = relationship("StampCopy", back_populates="origin")
+    location = relationship("OriginLocation", back_populates="origins")
+    dealer   = relationship("Dealer", back_populates="origins")
 
 
 class StampImage(Base):
