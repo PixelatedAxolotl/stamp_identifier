@@ -19,6 +19,7 @@ from enum import Enum
 
 from db.models import (
     Stamp, Theme, Series, PhysicalLocation, VariantSet, StampCopy,
+    StampCopyOrigin, OriginLocation, Dealer,
 )
 
 
@@ -38,6 +39,8 @@ class FieldSpec:
     label: str                     # shown in the field dropdown
     type: FT
     relation: str | None = None    # RELATION only: which relation (see _RELATION_CLAUSE)
+    origin: str | None = None      # NUMBER/DATE on a copy's origin: the StampCopyOrigin
+                                   # attr to compare, matched via any copy's origin
 
 
 # Order here is the order shown in the field dropdown.
@@ -67,6 +70,12 @@ FIELDS: list[FieldSpec] = [
     FieldSpec("location",     "Location",     FT.RELATION, relation="location"),
     FieldSpec("variant_set",  "Variant set",  FT.RELATION, relation="variant_set"),
     FieldSpec("condition",    "Condition",    FT.RELATION, relation="condition"),
+    # Acquisition origin — matched against any owned copy's origin record.
+    FieldSpec("origin_location", "Acquired at",     FT.RELATION, relation="origin_location"),
+    FieldSpec("origin_dealer",   "Dealer / seller", FT.RELATION, relation="origin_dealer"),
+    FieldSpec("origin_method",   "Acquired by",     FT.RELATION, relation="origin_method"),
+    FieldSpec("origin_price",    "Price",           FT.NUMBER,   origin="price"),
+    FieldSpec("origin_date",     "Acquired date",   FT.DATE,     origin="acquired_date"),
 ]
 
 FIELDS_BY_KEY: dict[str, FieldSpec] = {f.key: f for f in FIELDS}
@@ -87,6 +96,12 @@ OPS: dict[FT, list[tuple[str, str]]] = {
 VALUELESS_OPS = {"empty", "nempty", "yes", "no"}
 
 
+def _origin_has(inner):
+    """Wrap a predicate on StampCopyOrigin so it matches a Stamp that owns any
+    copy whose origin satisfies it."""
+    return Stamp.copies.any(StampCopy.origin.has(inner))
+
+
 def _relation_clause(relation: str, op: str, value):
     """Build a clause for a RELATION field. op is 'has' / 'hasnot'."""
     exists = {
@@ -95,6 +110,9 @@ def _relation_clause(relation: str, op: str, value):
         "location":    Stamp.physical_location.has(PhysicalLocation.name == value),
         "variant_set": Stamp.variant_set.has(VariantSet.name == value),
         "condition":   Stamp.copies.any(StampCopy.condition == value),
+        "origin_location": _origin_has(StampCopyOrigin.location.has(OriginLocation.name == value)),
+        "origin_dealer":   _origin_has(StampCopyOrigin.dealer.has(Dealer.name == value)),
+        "origin_method":   _origin_has(StampCopyOrigin.method == value),
     }.get(relation)
     if exists is None:
         return None
@@ -160,22 +178,26 @@ def build_clause(rule: dict):
         return getattr(Stamp, spec.key).is_(op == "yes")
 
     elif spec.type == FT.NUMBER:
-        col = getattr(Stamp, spec.key)
+        col = getattr(StampCopyOrigin, spec.origin) if spec.origin else getattr(Stamp, spec.key)
+        wrap = _origin_has if spec.origin else (lambda c: c)
         if op == "empty":
-            return col.is_(None)
+            return wrap(col.is_(None))
         num = _coerce_number(value)
         if num is None:
             return None
-        return {"eq": col == num, "gt": col > num, "lt": col < num}.get(op)
+        clause = {"eq": col == num, "gt": col > num, "lt": col < num}.get(op)
+        return wrap(clause) if clause is not None else None
 
     elif spec.type == FT.DATE:
-        col = getattr(Stamp, spec.key)
+        col = getattr(StampCopyOrigin, spec.origin) if spec.origin else getattr(Stamp, spec.key)
+        wrap = _origin_has if spec.origin else (lambda c: c)
         if op == "empty":
-            return col.is_(None)
+            return wrap(col.is_(None))
         dt = _coerce_date(value)
         if dt is None:
             return None
-        return {"after": col >= dt, "before": col <= dt}.get(op)
+        clause = {"after": col >= dt, "before": col <= dt}.get(op)
+        return wrap(clause) if clause is not None else None
 
     elif spec.type == FT.RELATION:
         return _relation_clause(spec.relation, op, value)

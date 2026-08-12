@@ -7,7 +7,10 @@ import re
 from sqlalchemy import and_, or_
 from sqlalchemy.orm import Session
 from sqlalchemy.exc import IntegrityError
-from db.models import Stamp, StampImage, StampCopy, Theme, VariantSet, PhysicalLocation, Series, stamp_theme_association
+from db.models import (
+    Stamp, StampImage, StampCopy, StampCopyOrigin, OriginLocation, Dealer,
+    Theme, VariantSet, PhysicalLocation, Series, stamp_theme_association,
+)
 from db.gallery_filters import FT, FIELDS_BY_KEY, build_clause
 from logger import logger
 
@@ -201,11 +204,14 @@ class StampService:
             rows = session.query(col).distinct().order_by(col).all()
         elif spec.type == FT.RELATION:
             model, attr = {
-                "series":      (Series, Series.name),
-                "themes":      (Theme, Theme.name),
-                "location":    (PhysicalLocation, PhysicalLocation.name),
-                "variant_set": (VariantSet, VariantSet.name),
-                "condition":   (StampCopy, StampCopy.condition),
+                "series":          (Series, Series.name),
+                "themes":          (Theme, Theme.name),
+                "location":        (PhysicalLocation, PhysicalLocation.name),
+                "variant_set":     (VariantSet, VariantSet.name),
+                "condition":       (StampCopy, StampCopy.condition),
+                "origin_location": (OriginLocation, OriginLocation.name),
+                "origin_dealer":   (Dealer, Dealer.name),
+                "origin_method":   (StampCopyOrigin, StampCopyOrigin.method),
             }.get(spec.relation, (None, None))
             if attr is None:
                 return []
@@ -653,22 +659,161 @@ class StampCopyService:
 
     @staticmethod
     def set_copies(session: Session, stamp_id: int, copies: list[dict], _commit: bool = True) -> None:
-        """Replace all copy records for a stamp with the provided list."""
+        """Replace all copy records for a stamp with the provided list.
+
+        Each copy dict may carry an "origin" sub-dict (location/dealer names,
+        method, price, date, notes). Since copy rows are deleted and rebuilt on
+        every save, the origin travels in the dict and is rebuilt alongside the
+        copy so provenance survives an edit.
+        """
         session.query(StampCopy).filter_by(stamp_id=stamp_id).delete()
         for c in copies:
             condition = (c.get("condition") or "").strip()
             quantity  = int(c.get("quantity") or 1)
-            if condition and quantity > 0:
-                session.add(StampCopy(
-                    stamp_id=stamp_id,
-                    condition=condition,
-                    quantity=quantity,
-                    notes=c.get("notes") or None,
-                ))
+            if not (condition and quantity > 0):
+                continue
+            copy = StampCopy(
+                stamp_id=stamp_id,
+                condition=condition,
+                quantity=quantity,
+                notes=c.get("notes") or None,
+            )
+            origin = OriginService.build_origin(session, c.get("origin"))
+            if origin is not None:
+                copy.origin = origin
+            session.add(copy)
         if _commit:
             session.commit()
         else:
             session.flush()
+
+
+class OriginService:
+    """Acquisition provenance: reusable locations/dealers and per-copy origins."""
+
+    # Suggested acquisition methods; the UI offers these but stores free text.
+    METHODS = ["Bought", "Given", "Traded", "Found", "Inherited", "Other"]
+
+    @staticmethod
+    def get_all_locations(session: Session) -> list[OriginLocation]:
+        return session.query(OriginLocation).order_by(OriginLocation.name).all()
+
+    @staticmethod
+    def get_all_dealers(session: Session) -> list[Dealer]:
+        return session.query(Dealer).order_by(Dealer.name).all()
+
+    @staticmethod
+    def get_location_date(session: Session, name: str) -> str | None:
+        """The most recent acquisition date recorded at this location, as
+        'YYYY-MM-DD', or None. Used to auto-fill the date when a location is
+        picked (locations recur, so this is the last date seen there, not a
+        fixed property of the place)."""
+        name = (name or "").strip()
+        if not name:
+            return None
+        row = (
+            session.query(StampCopyOrigin.acquired_date)
+            .join(OriginLocation, StampCopyOrigin.location_id == OriginLocation.id)
+            .filter(
+                OriginLocation.name == name,
+                StampCopyOrigin.acquired_date.isnot(None),
+            )
+            .order_by(StampCopyOrigin.acquired_date.desc())
+            .first()
+        )
+        return row[0].strftime("%Y-%m-%d") if row and row[0] else None
+
+    @staticmethod
+    def get_method_suggestions(session: Session) -> list[str]:
+        """Suggested methods first (Bought/Given/…), then any previously entered
+        custom methods not already in that list, so past entries are reusable."""
+        rows = (
+            session.query(StampCopyOrigin.method)
+            .filter(StampCopyOrigin.method.isnot(None))
+            .distinct()
+            .all()
+        )
+        seen = {m.lower() for m in OriginService.METHODS}
+        extra = sorted(
+            r[0] for r in rows if r[0] and r[0].lower() not in seen
+        )
+        return OriginService.METHODS + extra
+
+    @staticmethod
+    def get_or_create_location(session: Session, name: str) -> OriginLocation | None:
+        name = (name or "").strip()
+        if not name:
+            return None
+        loc = session.query(OriginLocation).filter_by(name=name).one_or_none()
+        if loc is None:
+            loc = OriginLocation(name=name)
+            session.add(loc)
+            session.flush()
+        return loc
+
+    @staticmethod
+    def get_or_create_dealer(session: Session, name: str) -> Dealer | None:
+        name = (name or "").strip()
+        if not name:
+            return None
+        dealer = session.query(Dealer).filter_by(name=name).one_or_none()
+        if dealer is None:
+            dealer = Dealer(name=name)
+            session.add(dealer)
+            session.flush()
+        return dealer
+
+    @staticmethod
+    def _parse_price(value):
+        if value in (None, ""):
+            return None
+        try:
+            return round(float(re.sub(r"[^\d.\-]", "", str(value))), 2)
+        except (ValueError, TypeError):
+            return None
+
+    @staticmethod
+    def build_origin(session: Session, data: dict | None) -> StampCopyOrigin | None:
+        """Build a StampCopyOrigin from a UI dict, or None if it holds nothing.
+
+        location/dealer arrive as names; blanks become None. Locations and
+        dealers are get-or-created so they're reusable across copies.
+        """
+        if not data:
+            return None
+        location = OriginService.get_or_create_location(session, data.get("location"))
+        dealer   = OriginService.get_or_create_dealer(session, data.get("dealer"))
+        method   = (data.get("method") or "").strip() or None
+        price    = OriginService._parse_price(data.get("price"))
+        acquired = StampService._parse_date_string(data.get("acquired_date"))
+        notes    = (data.get("notes") or "").strip() or None
+
+        # Nothing meaningful entered → no origin row.
+        if not any([location, dealer, method, price is not None, acquired, notes]):
+            return None
+
+        return StampCopyOrigin(
+            location=location,
+            dealer=dealer,
+            method=method,
+            price=price,
+            acquired_date=acquired,
+            notes=notes,
+        )
+
+    @staticmethod
+    def origin_to_dict(origin: StampCopyOrigin | None) -> dict:
+        """Flatten an origin (with related names) for the UI. Empty dict if None."""
+        if origin is None:
+            return {}
+        return {
+            "location":      origin.location.name if origin.location else "",
+            "dealer":        origin.dealer.name if origin.dealer else "",
+            "method":        origin.method or "",
+            "price":         "" if origin.price is None else f"{origin.price:.2f}",
+            "acquired_date": origin.acquired_date.strftime("%Y-%m-%d") if origin.acquired_date else "",
+            "notes":         origin.notes or "",
+        }
 
 
 class PhysicalLocationService:

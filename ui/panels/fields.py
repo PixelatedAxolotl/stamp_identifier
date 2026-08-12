@@ -23,7 +23,7 @@ import os
 from PySide6.QtWidgets import (
     QVBoxLayout, QHBoxLayout, QFormLayout, QLabel, QLineEdit, QPushButton,
     QComboBox, QCheckBox, QScrollArea, QWidget, QFrame, QSizePolicy,
-    QMessageBox, QInputDialog, QSpinBox,
+    QMessageBox, QInputDialog, QSpinBox, QDialog, QDialogButtonBox,
 )
 from PySide6.QtCore import Qt, Signal, QTimer
 from PySide6.QtGui import QColor, QDesktopServices
@@ -32,7 +32,7 @@ from PySide6.QtCore import QUrl
 from db.session import SessionLocal
 from db.service import (
     StampService, SeriesService, PhysicalLocationService,
-    StampCopyService,
+    StampCopyService, OriginService,
 )
 from db.models import Stamp, VariantSet
 from image_storage import associate_image, deassociate_image
@@ -153,7 +153,7 @@ _FIELD_LABELS: dict[str, str] = {
 }
 
 # Field arrangement — the single place that controls how fields are laid out.
-# Each inner list is one on-screen line; put as many keys on a line as you like
+# Each inner list is one on-screen line; put as many keys on a line as wanted
 # to place those fields side by side, or keep a key alone for its own line.
 # Reorder and regroup freely. A key left out here is still built but not shown;
 # an unknown key is skipped with a warning.
@@ -190,6 +190,141 @@ def _disable_horizontal_scroll(area: QScrollArea) -> None:
     hbar = area.horizontalScrollBar()
     hbar.rangeChanged.connect(lambda _lo, _hi: hbar.setRange(0, 0))
     hbar.setRange(0, 0)
+
+
+def origin_summary(origin: dict | None) -> str:
+    """Compact one-line description of a copy's origin for the row label."""
+    if not origin:
+        return "No origin"
+    parts = []
+    if origin.get("location"):
+        parts.append(origin["location"])
+    if origin.get("dealer"):
+        parts.append(origin["dealer"])
+    tail = []
+    if origin.get("method"):
+        tail.append(origin["method"])
+    if origin.get("price"):
+        tail.append(f"${origin['price']}")
+    if origin.get("acquired_date"):
+        tail.append(origin["acquired_date"])
+    if tail:
+        parts.append(" ".join(tail))
+    return " · ".join(parts) if parts else "No origin"
+
+
+class OriginDialog(QDialog):
+    """Edit the acquisition origin of a single copy: where/whom it came from,
+    how it was acquired, price, date, and notes. Location and dealer are
+    editable combos seeded with existing entries so they stay reusable while
+    still letting a brand-new one be typed."""
+
+    def __init__(self, parent=None, origin: dict | None = None):
+        super().__init__(parent)
+        self.setWindowTitle("Copy Origin")
+        origin = origin or {}
+
+        form = QFormLayout(self)
+
+        session = SessionLocal()
+        try:
+            locations = [l.name for l in OriginService.get_all_locations(session)]
+            dealers   = [d.name for d in OriginService.get_all_dealers(session)]
+            methods   = OriginService.get_method_suggestions(session)
+        finally:
+            session.close()
+
+        self._location = QComboBox()
+        self._location.setEditable(True)
+        self._location.addItem("")
+        self._location.addItems(locations)
+        self._location.setCurrentText(origin.get("location", ""))
+
+        self._dealer = QComboBox()
+        self._dealer.setEditable(True)
+        self._dealer.addItem("")
+        self._dealer.addItems(dealers)
+        self._dealer.setCurrentText(origin.get("dealer", ""))
+
+        self._method = QComboBox()
+        self._method.setEditable(True)
+        self._method.addItem("")
+        self._method.addItems(methods)
+        self._method.setCurrentText(origin.get("method", ""))
+
+        self._price = QLineEdit(origin.get("price", ""))
+        self._price.setPlaceholderText("e.g. 5.00")
+
+        self._date = QLineEdit(origin.get("acquired_date", ""))
+        self._date.setPlaceholderText("YYYY-MM-DD")
+
+        self._notes = QLineEdit(origin.get("notes", ""))
+
+        form.addRow("Location:", self._location)
+        form.addRow("Dealer / Seller:", self._dealer)
+        form.addRow("Acquired by:", self._method)
+        form.addRow("Price:", self._price)
+        form.addRow("Date:", self._date)
+        form.addRow("Notes:", self._notes)
+
+        # Track the values we auto-filled so switching locations/methods can
+        # update them, while a value the user typed themselves is never
+        # overwritten. Connected after initial values are set so loading an
+        # existing origin doesn't trip the handlers.
+        self._autofilled_date  = ""
+        self._autofilled_price = ""
+        self._location.activated.connect(self._maybe_fill_date)
+        self._method.currentTextChanged.connect(self._maybe_fill_price)
+
+        buttons = QDialogButtonBox(
+            QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel
+        )
+        buttons.accepted.connect(self.accept)
+        buttons.rejected.connect(self.reject)
+        form.addRow(buttons)
+
+    # Methods with no purchase price — selecting one pre-fills the price as 0.
+    _FREE_METHODS = {"given", "traded", "found", "inherited"}
+
+    def _maybe_fill_date(self, *_):
+        """When a location is picked, seed the date from the last acquisition
+        there. Only fills a blank date or one we auto-filled before, so a
+        manually entered date is preserved."""
+        loc = self._location.currentText().strip()
+        if not loc:
+            return
+        session = SessionLocal()
+        try:
+            date = OriginService.get_location_date(session, loc)
+        finally:
+            session.close()
+        cur = self._date.text().strip()
+        if date and cur in ("", self._autofilled_date):
+            self._date.setText(date)
+            self._autofilled_date = date
+
+    def _maybe_fill_price(self, *_):
+        """Pre-fill price 0 for gift/trade/found/inherited; clear our own 0 when
+        switching back to a paid method. Never touches a price the user typed."""
+        method = self._method.currentText().strip().lower()
+        cur = self._price.text().strip()
+        if method in self._FREE_METHODS:
+            if cur in ("", self._autofilled_price):
+                self._price.setText("0")
+                self._autofilled_price = "0"
+        elif self._autofilled_price and cur == self._autofilled_price:
+            self._price.clear()
+            self._autofilled_price = ""
+
+    def get_origin(self) -> dict:
+        return {
+            "location":      self._location.currentText().strip(),
+            "dealer":        self._dealer.currentText().strip(),
+            "method":        self._method.currentText().strip(),
+            "price":         self._price.text().strip(),
+            "acquired_date": self._date.text().strip(),
+            "notes":         self._notes.text().strip(),
+        }
 
 
 class FieldsPanel(Panel):
@@ -317,7 +452,9 @@ class FieldsPanel(Panel):
             # Copies
             self._clear_copies()
             for c in stamp.copies:
-                self._add_copy_row(c.condition, c.quantity)
+                self._add_copy_row(
+                    c.condition, c.quantity, OriginService.origin_to_dict(c.origin)
+                )
 
             # Variant set
             self.current_variant_set_id = stamp.variant_set_id
@@ -788,8 +925,9 @@ class FieldsPanel(Panel):
         except Exception as e:
             logger.warning(f"DuplicateStampPreviewDialog unavailable: {e}")
 
-    def _add_copy_row(self, condition: str = "", quantity: int = 1):
+    def _add_copy_row(self, condition: str = "", quantity: int = 1, origin: dict | None = None):
         row = QWidget()
+        row._origin = origin or {}
         rl  = QHBoxLayout(row)
         rl.setContentsMargins(0, 0, 0, 0)
         rl.setSpacing(0)
@@ -825,13 +963,29 @@ class FieldsPanel(Panel):
         del_btn.setFixedWidth(24)
         del_btn.clicked.connect(lambda: (row.setParent(None), row.deleteLater()))
 
+        origin_btn = QPushButton("Origin…")
+        origin_btn.setFixedWidth(64)
+        origin_lbl = QLabel(origin_summary(row._origin))
+        origin_lbl.setStyleSheet("color: gray; font-style: italic;")
+        origin_lbl.setTextInteractionFlags(Qt.TextInteractionFlag.NoTextInteraction)
+        origin_lbl.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Preferred)
+        origin_btn.clicked.connect(lambda: self._edit_copy_origin(row, origin_lbl))
+
         rl.addWidget(cond, 1)
         rl.addWidget(qty)
         rl.addWidget(dec_btn)
         rl.addWidget(inc_btn)
         rl.addWidget(del_btn)
         rl.addStretch(1)
+        rl.addWidget(origin_btn)
+        rl.addWidget(origin_lbl, 1)
         self._copies_layout.addWidget(row)
+
+    def _edit_copy_origin(self, row, origin_lbl):
+        dlg = OriginDialog(self, row._origin)
+        if dlg.exec() == QDialog.DialogCode.Accepted:
+            row._origin = dlg.get_origin()
+            origin_lbl.setText(origin_summary(row._origin))
 
     def _clear_copies(self):
         while self._copies_layout.count():
@@ -848,7 +1002,11 @@ class FieldsPanel(Panel):
             cond = item.widget().findChild(QComboBox)
             qty  = item.widget().findChild(QSpinBox)
             if cond and qty:
-                copies.append({"condition": cond.currentText(), "quantity": qty.value()})
+                copies.append({
+                    "condition": cond.currentText(),
+                    "quantity": qty.value(),
+                    "origin": getattr(item.widget(), "_origin", {}) or {},
+                })
         return copies
 
     def _load_location_combo(self, select_id: int | None = None):
