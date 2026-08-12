@@ -971,13 +971,19 @@ class FieldsPanel(Panel):
         origin_lbl.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Preferred)
         origin_btn.clicked.connect(lambda: self._edit_copy_origin(row, origin_lbl))
 
+        # Keep the qty +/- cluster tight (spacing 0), but separate the logical
+        # groups so the row doesn't read as one squished blob. The summary label
+        # takes the leftover width instead of a trailing stretch.
         rl.addWidget(cond, 1)
+        rl.addSpacing(8)
         rl.addWidget(qty)
         rl.addWidget(dec_btn)
         rl.addWidget(inc_btn)
+        rl.addSpacing(8)
         rl.addWidget(del_btn)
-        rl.addStretch(1)
+        rl.addSpacing(12)
         rl.addWidget(origin_btn)
+        rl.addSpacing(8)
         rl.addWidget(origin_lbl, 1)
         self._copies_layout.addWidget(row)
 

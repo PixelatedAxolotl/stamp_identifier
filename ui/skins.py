@@ -12,11 +12,19 @@
 #
 # On "glows": true soft blur is NOT expressible in QSS — it needs a
 # QGraphicsDropShadowEffect in code. Everything here fakes the glow with bright,
-# saturated accent borders and layered gradients. If you want real bloom later,
-# attach a drop-shadow effect to panels/inputs; the palette below is chosen to
+# saturated accent borders and layered gradients. the palette below is chosen to
 # pair with a violet (#8a6cff) shadow.
 
+import os
+
 from ui.theme import USE_TEXTURES
+
+# Absolute path to the combo drop-down caret, forward-slashed for QSS url().
+# Styling QComboBox switches Qt to the styled render path, which drops the
+# native arrow unless a ::down-arrow image is supplied — this is that image.
+_COMBO_ARROW = os.path.join(
+    os.path.dirname(__file__), "assets", "combo_arrow.png"
+).replace("\\", "/")
 
 # --- palette -----------------------------------------------------------------
 # Kept as names here so the sheet reads intentionally; edit in one place.
@@ -148,8 +156,24 @@ QSpinBox:focus, QComboBox:focus {{
     border: 1px solid {_GLOW_VIOLET};
 }}
 QComboBox::drop-down {{
+    subcontrol-origin: padding;
+    subcontrol-position: center right;
     border: none;
-    width: 18px;
+    width: 20px;
+}}
+/* Explicit caret: without it, the styled QComboBox render path shows no arrow,
+   so the fields don't read as dropdowns. Brightens on hover/focus. */
+QComboBox::down-arrow {{
+    image: url("{_COMBO_ARROW}");
+    width: 12px;
+    height: 8px;
+}}
+QComboBox:hover::down-arrow, QComboBox:focus::down-arrow {{
+    width: 13px;
+    height: 9px;
+}}
+QComboBox::down-arrow:on {{
+    top: 1px;
 }}
 QComboBox QAbstractItemView {{
     background: {_BASE_MID};
