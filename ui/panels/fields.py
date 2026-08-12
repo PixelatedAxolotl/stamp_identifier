@@ -1100,7 +1100,13 @@ class FieldsPanel(Panel):
         if url:
             if not url.startswith("http"):
                 url = f"https://colnect.com{url}"
-            QDesktopServices.openUrl(QUrl(url))
+            # Prefer the already-open Playwright Colnect browser so the series
+            # page loads there (superseding whatever it was showing); fall back
+            # to the system browser when that worker isn't running.
+            if self._browser_worker and self._browser_worker.is_alive():
+                self._browser_worker.schedule_open_url(url)
+            else:
+                QDesktopServices.openUrl(QUrl(url))
 
     def _view_series_in_db(self):
         if not self.current_series_id:
