@@ -60,6 +60,12 @@ os.makedirs(INCOMING_DIR, exist_ok=True)
 # ============ LAYOUT PERSISTENCE ============
 LAYOUT_FILE = os.getenv("STAMP_LAYOUT_FILE", "storage/layout.json")
 
+# ============ STAMP ENTRY DEFAULTS ============
+# Values pre-filled into the Fields form when a new stamp is started (History
+# click / fresh capture) — see ui/field_defaults.py. Holds the per-field values,
+# their individual on/off flags, and the master toggle.
+DEFAULTS_FILE = os.getenv("STAMP_DEFAULTS_FILE", "storage/stamp_defaults.json")
+
 # ============ UI SKIN ============
 # Which visual skin the app renders with. Read once at startup (see backend.py
 # and ui/theme.py) — this is a launch-time switch, not a live toggle:

@@ -17,6 +17,11 @@
 #   set_lens_hints(scott, country) — called by Canvas on ResultsPanel.scott_country_suggested
 #   fill_from_colnect(info)        — called by Canvas when Colnect get-info completes
 #   clear_for_new_capture()        — called by Canvas on PreviewPanel.capture_complete
+#                                     and on HistoryPanel.image_selected; resets the
+#                                     form and applies the batch defaults
+#   apply_defaults()               — pre-fill the ticked batch defaults (see
+#                                     ui/field_defaults.py). New stamps only —
+#                                     load_stamp() never applies them.
 
 import os
 
@@ -40,6 +45,9 @@ from helper_utils import get_country_name, load_tag_aliases, load_theme_implicat
 from logger import logger
 from ui.panel import Panel, hide_scrollbars
 from ui.spinner import SpinnerWidget
+from ui.field_defaults import (
+    StampDefaults, DefaultsDialog, STAMP_FIELD_KEYS, ORIGIN_KEY_MAP,
+)
 
 def _same_path(a: str | None, b: str | None) -> bool:
     """True if two filesystem paths point at the same file, tolerant of case
@@ -351,6 +359,9 @@ class FieldsPanel(Panel):
 
         self._themes_panel   = None
         self._browser_worker = None
+        # Batch defaults pre-filled into a brand-new stamp (see apply_defaults).
+        # Loaded before _build_ui so the toggle row can render its current state.
+        self._defaults = StampDefaults()
         # Returns the active image path; injected by Canvas (single source of
         # truth). The panel no longer caches its own copy.
         self._get_image_path = lambda: None
@@ -388,8 +399,117 @@ class FieldsPanel(Panel):
 
         Only the form fields are cleared — the active image is owned by Canvas
         and was just set by the capture, so it must be left intact here.
+
+        This is the single entry point for "start a brand-new stamp" (a History
+        thumbnail click and a fresh capture both route here), which is why the
+        batch defaults are applied from here rather than from _reset_form —
+        the post-save reset goes through _reset_form directly and deliberately
+        leaves the form blank.
         """
         self._reset_form()
+        self.apply_defaults()
+
+    # ------------------------------------------------------------------
+    # Batch defaults
+    # ------------------------------------------------------------------
+
+    def apply_defaults(self):
+        """Pre-fill the form with the ticked batch defaults.
+
+        Only ever called on the new-stamp path — an existing stamp opened from
+        the Gallery/Database goes through load_stamp(), which never calls this.
+        Assumes the form has just been reset, so it writes values in rather
+        than merging with whatever was there.
+        """
+        d = self._defaults
+        if not d.active:
+            return
+
+        for key in STAMP_FIELD_KEYS:
+            if not d.is_on(key):
+                continue
+            widget = self._field_inputs.get(key)
+            value  = d.values.get(key)
+            if isinstance(widget, QLineEdit):
+                widget.setText(str(value))
+            elif isinstance(widget, QComboBox):
+                idx = widget.findText(str(value))
+                if idx >= 0:
+                    widget.setCurrentIndex(idx)
+            elif isinstance(widget, QCheckBox):
+                widget.setChecked(bool(value))
+
+        if d.is_on("physical_location"):
+            idx = self._location_combo.findText(str(d.values.get("physical_location")))
+            if idx >= 0:
+                self._location_combo.setCurrentIndex(idx)
+
+        if d.is_on("themes") and self._themes_panel:
+            self._themes_panel.set_selected_themes(
+                [str(t) for t in d.values.get("themes") or []]
+            )
+            # set_selected_themes() switches the list to MultiSelection; put the
+            # add-mode selectability back so pre-selecting themes doesn't quietly
+            # make the panel editable.
+            self._sync_theme_interactivity()
+
+        # The copies section is rebuilt as a whole: _set_add_mode() has already
+        # dropped in the standard blank row, so replace it rather than adding a
+        # second one. Defaults that are off fall back to that row's values.
+        copy_keys = ["copy_condition", "copy_quantity", *ORIGIN_KEY_MAP]
+        if d.any_active(copy_keys):
+            origin = {
+                origin_key: str(d.values.get(key))
+                for key, origin_key in ORIGIN_KEY_MAP.items()
+                if d.is_on(key)
+            }
+            try:
+                quantity = int(d.get("copy_quantity", 1))
+            except (TypeError, ValueError):
+                quantity = 1
+            # A stored condition that is no longer one of the offered choices
+            # would leave the combo on its first entry (Mint Never Hinged) —
+            # silently wrong for every stamp in the batch. Fall back instead.
+            condition = str(d.get("copy_condition", ""))
+            if condition not in StampCopyService.CONDITIONS:
+                condition = "Fine Used (FU)"
+            self._clear_copies()
+            self._add_copy_row(condition, quantity, origin)
+
+    def _edit_defaults(self):
+        dlg = DefaultsDialog(self, self._defaults, _FIELD_LABELS)
+        if dlg.exec() == QDialog.DialogCode.Accepted:
+            self._defaults_cb.blockSignals(True)
+            self._defaults_cb.setChecked(self._defaults.active)
+            self._defaults_cb.blockSignals(False)
+            self._refresh_defaults_label()
+
+    def _on_defaults_toggled(self, checked: bool):
+        self._defaults.active = checked
+        self._defaults.save()
+        self._refresh_defaults_label()
+        # Switching them on mid-entry fills the stamp being added right now, so
+        # the toggle has a visible effect instead of only mattering next time.
+        # Never touches an existing stamp open for editing.
+        if checked and self.current_stamp_id is None:
+            self.apply_defaults()
+
+    def _refresh_defaults_label(self):
+        d = self._defaults
+        self._defaults_lbl.setText(d.summary())
+        self._defaults_lbl.setToolTip(d.tooltip())
+        live = d.active and bool(d.active_keys())
+        self._defaults_lbl.setStyleSheet(
+            "font-style: italic;" if live else "color: gray; font-style: italic;"
+        )
+
+    def _sync_theme_interactivity(self):
+        """Apply the add-mode theme selectability rule: read-only, unless the
+        filter search is on so a theme can be picked to search with."""
+        if not self._themes_panel:
+            return
+        cb = getattr(self, "_filter_search_cb", None)
+        self._themes_panel.set_interactive(cb is not None and cb.isChecked())
 
     def set_lens_hints(self, scott: str, country: str):
         """Fill Scott # and country from Lens suggestions if fields are empty."""
@@ -861,11 +981,9 @@ class FieldsPanel(Panel):
 
     def _set_add_mode(self):
         self.current_stamp_id = None
-        if self._themes_panel:
-            # Normally read-only in add mode, but keep it selectable if the filter
-            # search is on so a theme survives capture resets and stays pickable.
-            cb = getattr(self, "_filter_search_cb", None)
-            self._themes_panel.set_interactive(cb is not None and cb.isChecked())
+        # Themes are normally read-only in add mode, but stay selectable if the
+        # filter search is on so a theme survives capture resets and stays pickable.
+        self._sync_theme_interactivity()
         self._save_btn.setText("Add Stamp to Database")
         self._delete_btn.setVisible(False)
         self._reassign_btn.setVisible(False)
@@ -1187,6 +1305,41 @@ class FieldsPanel(Panel):
         wrapper.setContentsMargins(0, 0, 0, 0)
         wrapper.addWidget(scroll)
 
+        # --- batch defaults toggle -----------------------------------------
+        # Master on/off for the values pre-filled into every new stamp, with a
+        # one-line reminder of what's currently set and the editor behind it.
+        # Capped to the same total width as the widest field row so the Edit
+        # button can't be pushed past the panel edge — the form's content is
+        # already about as wide as the panel's default width, and an uncapped
+        # row would put the button in the clipped strip beyond it.
+        defaults_container = QWidget()
+        defaults_row = QHBoxLayout(defaults_container)
+        defaults_row.setContentsMargins(0, 0, 0, 0)
+        defaults_row.setSpacing(6)
+        _defaults_max_w = _ROW_WIDTHS.get("title")
+        if _defaults_max_w is not None:
+            defaults_container.setMaximumWidth(_defaults_max_w)
+        self._defaults_cb = QCheckBox("Defaults:")
+        self._defaults_cb.setChecked(self._defaults.active)
+        self._defaults_cb.setToolTip(
+            "Pre-fill these values whenever a new stamp is started from the "
+            "History strip or a fresh capture"
+        )
+        self._defaults_cb.toggled.connect(self._on_defaults_toggled)
+        defaults_row.addWidget(self._defaults_cb)
+        self._defaults_lbl = QLabel()
+        # Ignored width policy: the summary takes the leftover space instead of
+        # forcing the panel wider when a long batch description is set.
+        self._defaults_lbl.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Preferred)
+        defaults_row.addWidget(self._defaults_lbl, 1)
+        defaults_btn = QPushButton("Edit…")
+        defaults_btn.setFixedWidth(52)
+        defaults_btn.setToolTip("Choose which values are filled in automatically")
+        defaults_btn.clicked.connect(self._edit_defaults)
+        defaults_row.addWidget(defaults_btn)
+        outer.addWidget(defaults_container)
+        self._refresh_defaults_label()
+
         # Field form — one label+field per row, stacked vertically. Each row
         # is wrapped in its own container so that its total width (label +
         # field + any inline buttons) can be capped independently via
@@ -1366,6 +1519,34 @@ class FieldsPanel(Panel):
 
         self._description_input = _field("description")
         self._field_widgets["description"] = self._description_input
+
+        # Field key -> the actual editable widget for that field. Distinct from
+        # self._field_widgets, whose entry is the whole laid-out row for fields
+        # that carry inline buttons (country, series). apply_defaults() writes
+        # through this map.
+        self._field_inputs: dict[str, QWidget] = {
+            "title":           self._title_input,
+            "scott":           self._scott_input,
+            "country":         self._country_input,
+            "series":          self._series_input,
+            "series_complete": self._series_complete_combo,
+            "emission":        self._emission_input,
+            "face_value":      self._face_value_input,
+            "issued":          self._issued_input,
+            "expired":         self._expired_input,
+            "size":            self._size_input,
+            "perforation":     self._perforation_input,
+            "paper":           self._paper_input,
+            "gum":             self._gum_input,
+            "watermark":       self._watermark_input,
+            "printing":        self._printing_input,
+            "format":          self._format_input,
+            "print_run":       self._print_run_input,
+            "colors":          self._colors_input,
+            "designers":       self._designers_input,
+            "description":     self._description_input,
+            "variants":        self._variants_cb,
+        }
 
         # --- place the fields on lines per _FORM_LAYOUT --------------------
         for _line in _FORM_LAYOUT:
