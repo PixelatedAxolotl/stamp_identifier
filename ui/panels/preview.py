@@ -513,8 +513,13 @@ class PreviewPanel(Panel):
             self._cap.set(cv2.CAP_PROP_FOCUS, value)
 
     def _on_zoom_changed(self, value: int):
-        self.zoom = value / 100.0
+        self.zoom = max(1.0, value / 100.0)
         self._zoom_label.setText(f"Zoom: {self.zoom:.1f}x")
+        # Re-draw immediately. In live mode the frame timer would eventually
+        # redraw anyway, but in image mode it is stopped and the new zoom would
+        # never reach the screen.
+        if self._current_frame is not None:
+            self._display_frame(self._current_frame)
 
     # ------------------------------------------------------------------
     # Event filter — tap-to-focus on preview label
