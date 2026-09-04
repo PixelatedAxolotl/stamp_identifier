@@ -460,6 +460,18 @@ class Canvas(QWidget):
         source that changes the active image; normalizes falsy paths to None."""
         self.current_image_path = path or None
 
+    def _on_incoming_image_deleted(self, path: str):
+        """Clear the active image when that exact file has just been deleted.
+
+        Only the active image is touched — the Preview panel keeps showing what
+        it already decoded into memory, which is harmless and avoids a jarring
+        blank on a delete that had nothing to do with what is on screen.
+        """
+        if self.current_image_path and os.path.normpath(
+            self.current_image_path
+        ) == os.path.normpath(path):
+            self.set_current_image_path(None)
+
     # ------------------------------------------------------------------
     # Signal wiring
     # ------------------------------------------------------------------
@@ -510,6 +522,12 @@ class Canvas(QWidget):
             h.image_selected.connect(self.set_current_image_path)
         if h and f:
             h.image_selected.connect(lambda _: f.clear_for_new_capture())
+
+        # History right-click → Delete. If the image that just went to the
+        # recycle bin was the one being identified, forget it, so a save can't
+        # go looking for a file that is no longer there.
+        if h:
+            h.image_deleted.connect(self._on_incoming_image_deleted)
 
         # Gallery / Database stamp click → load stamp in Fields
         if g and f:
@@ -820,6 +838,13 @@ class Canvas(QWidget):
                 self._preview_panel.stop_camera()
         except Exception as e:
             logger.warning(f"Camera shutdown error: {e}")
+        # Stop the phone poll thread before Qt tears down, so its COM apartment
+        # is closed while the process is still healthy.
+        try:
+            if getattr(self, '_history_panel', None):
+                self._history_panel.stop_watching()
+        except Exception as e:
+            logger.warning(f"Phone watcher shutdown error: {e}")
         try:
             self._browser_worker.shutdown()
             self._browser_worker.join(timeout=3)

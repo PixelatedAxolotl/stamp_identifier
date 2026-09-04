@@ -39,6 +39,11 @@ _ROT_MAP = {
     270: cv2.ROTATE_90_COUNTERCLOCKWISE,
 }
 
+# Wheel notch = 1.25x in/out; drag must exceed this many pixels to count as a
+# pan rather than a tap-to-focus click.
+_ZOOM_STEP      = 1.25
+_PAN_THRESHOLD  = 4
+
 _CAM_PROPS = [
     ("Brightness", cv2.CAP_PROP_BRIGHTNESS),
     ("Contrast",   cv2.CAP_PROP_CONTRAST),
@@ -64,6 +69,17 @@ class PreviewPanel(Panel):
         self.current_image_path: str | None = None
         self.preview_mode      = "live"
         self.zoom              = 1.0
+        # Zoom window: `zoom` sets its size, `_zoom_center` (normalized 0..1 of
+        # the frame) sets where it sits, so zooming isn't stuck on the middle of
+        # the frame. _crop_rect() turns the pair into pixels.
+        self._zoom_center      = [0.5, 0.5]
+        # How the last drawn frame was mapped onto the label — lets wheel/drag
+        # handlers convert cursor positions back into frame coordinates.
+        self._last_view: tuple | None = None
+        self._press_pos        = None
+        self._pan_last         = None
+        self._panning          = False
+        self._ignore_release   = False
         self._focus_tap_pos    = None
         self._browser_worker   = None
         self._request_counter  = 0
@@ -113,6 +129,8 @@ class PreviewPanel(Panel):
             return
         self.current_image_path = path
         self._current_frame = img
+        # A pan position from the previous image means nothing on this one.
+        self._zoom_center = [0.5, 0.5]
         self.set_image_mode()
         self._display_frame(img)
 
@@ -218,17 +236,12 @@ class PreviewPanel(Panel):
         # are attached to a stamp (storage.associate_image moves them to IMAGE_DIR).
         path = os.path.join(INCOMING_DIR, f"stamp_{ts}.jpg")
         try:
+            # Crop the full-resolution frame with the same window the preview is
+            # showing — saved pixels are what you framed, at camera resolution.
             frame = self._current_frame
-            zoom  = self.zoom or 1.0
-            if zoom > 1.0:
-                fh, fw = frame.shape[:2]
-                cw = max(1, int(fw / zoom))
-                ch = max(1, int(fh / zoom))
-                x1 = max(0, (fw - cw) // 2)
-                y1 = max(0, (fh - ch) // 2)
-                to_save = frame[y1:y1 + ch, x1:x1 + cw]
-            else:
-                to_save = frame
+            fh, fw = frame.shape[:2]
+            x1, y1, cw, ch = self._crop_rect(fw, fh)
+            to_save = frame[y1:y1 + ch, x1:x1 + cw]
             cv2.imwrite(path, to_save)
         except Exception:
             cv2.imwrite(path, self._current_frame)
@@ -248,6 +261,7 @@ class PreviewPanel(Panel):
         )
         if self.preview_mode == "image" and self._current_frame is not None:
             self._current_frame = cv2.rotate(self._current_frame, cv2.ROTATE_90_CLOCKWISE)
+            self._zoom_center = [0.5, 0.5]   # pan position doesn't survive a rotate
             self._display_frame(self._current_frame)
             if self.current_image_path:
                 cv2.imwrite(self.current_image_path, self._current_frame)
@@ -267,6 +281,7 @@ class PreviewPanel(Panel):
                 img = cv2.imread(self.current_image_path)
                 if img is not None:
                     self._current_frame = img
+                    self._zoom_center = [0.5, 0.5]   # new framing, old pan is meaningless
                     self._display_frame(img)
         except Exception as e:
             logger.warning(f"CropDialog unavailable: {e}")
@@ -432,17 +447,27 @@ class PreviewPanel(Panel):
         self._current_frame = frame
         self._display_frame(frame)
 
+    def _crop_rect(self, fw: int, fh: int) -> tuple[int, int, int, int]:
+        """Zoom window into an (fw x fh) frame → (x1, y1, cw, ch).
+
+        Size comes from self.zoom, position from self._zoom_center. The window
+        is clamped to stay fully inside the frame, so panning stops at the
+        edges instead of scrolling blank padding into view.
+        """
+        zoom = self.zoom or 1.0
+        if zoom <= 1.0:
+            return 0, 0, fw, fh
+        cw = max(1, int(fw / zoom))
+        ch = max(1, int(fh / zoom))
+        cx, cy = self._zoom_center
+        x1 = max(0, min(int(round(cx * fw - cw / 2)), fw - cw))
+        y1 = max(0, min(int(round(cy * fh - ch / 2)), fh - ch))
+        return x1, y1, cw, ch
+
     def _display_frame(self, frame):
         fh, fw = frame.shape[:2]
-        zoom   = self.zoom or 1.0
-        if zoom > 1.0:
-            cw = max(1, int(fw / zoom))
-            ch = max(1, int(fh / zoom))
-            x1 = max(0, (fw - cw) // 2)
-            y1 = max(0, (fh - ch) // 2)
-            src = frame[y1:y1 + ch, x1:x1 + cw]
-        else:
-            src = frame
+        x1, y1, cw, ch = self._crop_rect(fw, fh)
+        src = frame[y1:y1 + ch, x1:x1 + cw]
 
         sh, sw = src.shape[:2]
         w      = self._preview_label.width()  or sw
@@ -452,12 +477,14 @@ class PreviewPanel(Panel):
         rgb    = cv2.cvtColor(resized, cv2.COLOR_BGR2RGB)
         qt_img = QPixmap.fromImage(ImageQt(Image.fromarray(rgb)))
 
+        # Pixmap is centered in the label, so the letterbox margin is half the
+        # leftover on each axis. Recorded for _label_to_frame().
+        ox = (w - qt_img.width())  / 2
+        oy = (h - qt_img.height()) / 2
+        self._last_view = (fw, fh, x1, y1, cw, ch, scale, ox, oy)
+
         if self._focus_tap_pos is not None:
             tap_x, tap_y = self._focus_tap_pos
-            pw = qt_img.width()
-            ph = qt_img.height()
-            ox = (w - pw) / 2
-            oy = (h - ph) / 2
             ix = tap_x - ox
             iy = tap_y - oy
             painter = QPainter(qt_img)
@@ -467,6 +494,88 @@ class PreviewPanel(Panel):
             painter.end()
 
         self._preview_label.setPixmap(qt_img)
+
+    # ------------------------------------------------------------------
+    # Internal — zoom navigation (wheel to zoom at cursor, drag to pan)
+    # ------------------------------------------------------------------
+
+    def _label_to_frame(self, lx: float, ly: float) -> tuple[float, float] | None:
+        """Label coordinates → frame coordinates, using the last drawn view.
+
+        Returns None before the first frame is drawn. Points on the letterbox
+        margin are clamped to the visible crop rather than rejected, so a wheel
+        just outside the image still zooms sensibly.
+        """
+        if self._last_view is None:
+            return None
+        _fw, _fh, x1, y1, cw, ch, scale, ox, oy = self._last_view
+        if scale <= 0:
+            return None
+        fx = x1 + (lx - ox) / scale
+        fy = y1 + (ly - oy) / scale
+        return (
+            min(max(fx, x1), x1 + cw),
+            min(max(fy, y1), y1 + ch),
+        )
+
+    def _zoom_at(self, lx: float, ly: float, factor: float):
+        """Zoom about the point under the cursor, keeping it in place."""
+        old = self._zoom_slider.value()
+        new = int(round(old * factor))
+        new = max(self._zoom_slider.minimum(), min(self._zoom_slider.maximum(), new))
+        if new == old:
+            return
+        pt = self._label_to_frame(lx, ly)
+        if pt is not None:
+            fw, fh, x1, y1, cw, ch, *_ = self._last_view
+            fx, fy = pt
+            # Keep the anchor at the same relative spot in the new, smaller
+            # window; _crop_rect clamps at the edges, where it can't hold.
+            relx = (fx - x1) / cw if cw else 0.5
+            rely = (fy - y1) / ch if ch else 0.5
+            z2   = new / 100.0
+            cw2, ch2 = fw / z2, fh / z2
+            self._zoom_center = [
+                (fx + (0.5 - relx) * cw2) / fw,
+                (fy + (0.5 - rely) * ch2) / fh,
+            ]
+        self._zoom_slider.setValue(new)     # → _on_zoom_changed() redraws
+
+    def _pan_by(self, dx: float, dy: float):
+        """Drag the zoom window by a label-space delta (opposite the cursor)."""
+        if self._last_view is None or (self.zoom or 1.0) <= 1.0:
+            return
+        fw, fh, _x1, _y1, cw, ch, scale, _ox, _oy = self._last_view
+        if scale <= 0:
+            return
+        cx, cy = self._zoom_center
+        cx -= (dx / scale) / fw
+        cy -= (dy / scale) / fh
+        # Clamp the stored center to what _crop_rect can actually honor —
+        # otherwise dragging past an edge banks up slack that has to be undone
+        # before the view moves again.
+        hx, hy = (cw / 2) / fw, (ch / 2) / fh
+        self._zoom_center = [
+            min(max(cx, hx), 1.0 - hx),
+            min(max(cy, hy), 1.0 - hy),
+        ]
+        if self._current_frame is not None:
+            self._display_frame(self._current_frame)
+
+    def _reset_zoom(self):
+        """Back to the whole frame, centered."""
+        self._zoom_center = [0.5, 0.5]
+        if self._zoom_slider.value() != 100:
+            self._zoom_slider.setValue(100)     # → _on_zoom_changed() redraws
+        elif self._current_frame is not None:
+            self._display_frame(self._current_frame)
+
+    def _update_pan_cursor(self):
+        """Grab-hand while there's room to pan; plain arrow at 1.0x."""
+        zoomed = (self.zoom or 1.0) > 1.0
+        self._preview_label.setCursor(
+            Qt.CursorShape.OpenHandCursor if zoomed else Qt.CursorShape.ArrowCursor
+        )
 
     # ------------------------------------------------------------------
     # Internal — focus tap
@@ -515,6 +624,7 @@ class PreviewPanel(Panel):
     def _on_zoom_changed(self, value: int):
         self.zoom = max(1.0, value / 100.0)
         self._zoom_label.setText(f"Zoom: {self.zoom:.1f}x")
+        self._update_pan_cursor()
         # Re-draw immediately. In live mode the frame timer would eventually
         # redraw anyway, but in image mode it is stopped and the new zoom would
         # never reach the screen.
@@ -536,10 +646,58 @@ class PreviewPanel(Panel):
             # otherwise never re-draw.
             if etype == QEvent.Type.Resize and self._current_frame is not None:
                 self._display_frame(self._current_frame)
+
+            # Wheel = zoom in/out about the cursor. Consumed so it can never
+            # scroll an ancestor instead.
+            elif etype == QEvent.Type.Wheel:
+                delta = event.angleDelta().y()
+                if delta:
+                    pos = event.position()
+                    self._zoom_at(pos.x(), pos.y(),
+                                  _ZOOM_STEP if delta > 0 else 1 / _ZOOM_STEP)
+                return True
+
+            # Press/move/release implement drag-to-pan. Tap-to-focus moved to
+            # release so a pan drag doesn't also fire a focus tap; a press that
+            # never moves is still a tap.
             elif (etype == QEvent.Type.MouseButtonPress
-                    and self.preview_mode == "live"):
+                    and event.button() == Qt.MouseButton.LeftButton):
                 pos = event.position()
-                self._handle_focus_tap(pos.x(), pos.y())
+                self._press_pos = self._pan_last = (pos.x(), pos.y())
+                self._panning   = False
+
+            elif etype == QEvent.Type.MouseMove and self._pan_last is not None:
+                pos = event.position()
+                if not self._panning and self._press_pos is not None:
+                    px, py = self._press_pos
+                    moved = abs(pos.x() - px) + abs(pos.y() - py)
+                    if moved > _PAN_THRESHOLD and (self.zoom or 1.0) > 1.0:
+                        self._panning = True
+                        self._preview_label.setCursor(Qt.CursorShape.ClosedHandCursor)
+                if self._panning:
+                    lx, ly = self._pan_last
+                    self._pan_by(pos.x() - lx, pos.y() - ly)
+                    self._pan_last = (pos.x(), pos.y())
+
+            elif (etype == QEvent.Type.MouseButtonRelease
+                    and event.button() == Qt.MouseButton.LeftButton):
+                was_pan = self._panning
+                self._pan_last = self._press_pos = None
+                self._panning  = False
+                self._update_pan_cursor()
+                # Qt sends an extra press/release pair around a double click;
+                # _ignore_release keeps that from re-triggering a focus tap
+                # right after a reset.
+                if self._ignore_release:
+                    self._ignore_release = False
+                elif not was_pan and self.preview_mode == "live":
+                    pos = event.position()
+                    self._handle_focus_tap(pos.x(), pos.y())
+
+            elif etype == QEvent.Type.MouseButtonDblClick:
+                self._ignore_release = True
+                self._reset_zoom()
+                return True
         return super().eventFilter(obj, event)
 
     # ------------------------------------------------------------------
@@ -565,6 +723,9 @@ class PreviewPanel(Panel):
         )
         self._preview_label.setMinimumHeight(180)
         self._preview_label.setMouseTracking(True)
+        self._preview_label.setToolTip(
+            "Scroll to zoom at the pointer · drag to pan · double-click to reset"
+        )
         # Stretch factor 1 (everything else defaults to 0) so all extra vertical
         # space goes to the preview, not the fixed-height control rows below it.
         # Without this the leftover is split between the label and the button
