@@ -23,12 +23,15 @@
 #                                     ui/field_defaults.py). New stamps only —
 #                                     load_stamp() never applies them.
 
+import html
 import os
+from functools import partial
 
 from PySide6.QtWidgets import (
     QVBoxLayout, QHBoxLayout, QFormLayout, QLabel, QLineEdit, QPushButton,
     QComboBox, QCheckBox, QScrollArea, QWidget, QFrame, QSizePolicy,
     QMessageBox, QInputDialog, QSpinBox, QDialog, QDialogButtonBox,
+    QToolButton, QMenu,
 )
 from PySide6.QtCore import Qt, Signal, QTimer
 from PySide6.QtGui import QColor, QDesktopServices
@@ -37,13 +40,14 @@ from PySide6.QtCore import QUrl
 from db.session import SessionLocal
 from db.service import (
     StampService, SeriesService, PhysicalLocationService,
-    StampCopyService, OriginService,
+    StampCopyService, OriginService, VariantSetService, OriginPresetService,
 )
 from db.models import Stamp, VariantSet
 from image_storage import associate_image, deassociate_image
-from helper_utils import get_country_name, load_tag_aliases, load_theme_implications, COUNTRY_MAP
+from helper_utils import load_tag_aliases, load_theme_implications
 from logger import logger
-from ui.panel import Panel, hide_scrollbars
+from ui.country_field import attach_country_expansion, make_country_browse_button
+from ui.panel import Panel, hide_scrollbars, set_default_glow
 from ui.spinner import SpinnerWidget
 from ui.field_defaults import (
     StampDefaults, DefaultsDialog, STAMP_FIELD_KEYS, ORIGIN_KEY_MAP,
@@ -359,6 +363,11 @@ class FieldsPanel(Panel):
 
         self._themes_panel   = None
         self._browser_worker = None
+        # Field key -> the value that was pre-filled from the batch defaults and
+        # is still sitting untouched in that field. Drives the blue glow; see
+        # the "Default-value indicators" section.
+        self._defaulted: dict[str, object] = {}
+        self._indicator_map: dict[str, QWidget] = {}
         # Batch defaults pre-filled into a brand-new stamp (see apply_defaults).
         # Loaded before _build_ui so the toggle row can render its current state.
         self._defaults = StampDefaults()
@@ -367,6 +376,7 @@ class FieldsPanel(Panel):
         self._get_image_path = lambda: None
 
         self._build_ui()
+        self._wire_default_indicators()
 
         # Debounce duplicate-stamp check
         self._dup_check_timer = QTimer(self)
@@ -434,15 +444,31 @@ class FieldsPanel(Panel):
                 widget.setText(str(value))
             elif isinstance(widget, QComboBox):
                 idx = widget.findText(str(value))
-                if idx >= 0:
-                    widget.setCurrentIndex(idx)
+                if idx < 0:
+                    continue        # nothing was applied — don't mark it
+                widget.setCurrentIndex(idx)
             elif isinstance(widget, QCheckBox):
                 widget.setChecked(bool(value))
+            else:
+                continue
+            self._mark_default(key, widget)
 
         if d.is_on("physical_location"):
-            idx = self._location_combo.findText(str(d.values.get("physical_location")))
+            name = str(d.values.get("physical_location"))
+            idx  = self._location_combo.findText(name)
+            if idx < 0:
+                # The combo is built once at startup, so a location added since
+                # then (including one just created from the defaults dialog)
+                # isn't in it yet. Reload before giving up.
+                self._load_location_combo()
+                idx = self._location_combo.findText(name)
             if idx >= 0:
                 self._location_combo.setCurrentIndex(idx)
+                self._mark_default("physical_location", self._location_combo)
+            else:
+                logger.warning(
+                    f"Default physical location '{name}' no longer exists — not applied"
+                )
 
         if d.is_on("themes") and self._themes_panel:
             self._themes_panel.set_selected_themes(
@@ -456,25 +482,140 @@ class FieldsPanel(Panel):
         # The copies section is rebuilt as a whole: _set_add_mode() has already
         # dropped in the standard blank row, so replace it rather than adding a
         # second one. Defaults that are off fall back to that row's values.
-        copy_keys = ["copy_condition", "copy_quantity", *ORIGIN_KEY_MAP]
-        if d.any_active(copy_keys):
-            origin = {
-                origin_key: str(d.values.get(key))
-                for key, origin_key in ORIGIN_KEY_MAP.items()
-                if d.is_on(key)
-            }
-            try:
-                quantity = int(d.get("copy_quantity", 1))
-            except (TypeError, ValueError):
-                quantity = 1
-            # A stored condition that is no longer one of the offered choices
-            # would leave the combo on its first entry (Mint Never Hinged) —
-            # silently wrong for every stamp in the batch. Fall back instead.
-            condition = str(d.get("copy_condition", ""))
-            if condition not in StampCopyService.CONDITIONS:
-                condition = "Fine Used (FU)"
+        if self._has_copy_defaults():
+            condition, quantity, origin = self._copy_row_defaults()
             self._clear_copies()
             self._add_copy_row(condition, quantity, origin)
+
+    # ------------------------------------------------------------------
+    # Default-value indicators
+    # ------------------------------------------------------------------
+    #
+    # A field pre-filled from the batch defaults carries a soft blue glow for as
+    # long as it still holds that value. The mark is dropped the moment the
+    # value stops being the default — whether you retyped it or a Colnect fetch
+    # wrote something else over it.
+
+    def _wire_default_indicators(self):
+        """Build the key -> widget map and drop a mark on manual edits.
+
+        Only user-driven signals are connected. textEdited / activated / clicked
+        do not fire for programmatic setters, so apply_defaults(), load_stamp()
+        and fill_from_colnect() can write freely without tripping them — the
+        Colnect case is handled deliberately by _refresh_default_marks().
+        """
+        self._indicator_map = dict(self._field_inputs)
+        # Themes and the copy / origin rows are left out on purpose: themes live
+        # in a separate panel and copy rows are rebuilt on the fly, so neither
+        # has one stable widget to hang an indicator on.
+        self._indicator_map["physical_location"] = self._location_combo
+
+        for key, widget in self._indicator_map.items():
+            drop = partial(self._clear_default_mark, key)
+            if isinstance(widget, QLineEdit):
+                widget.textEdited.connect(drop)
+            elif isinstance(widget, QComboBox):
+                widget.activated.connect(drop)
+                if widget.isEditable() and widget.lineEdit() is not None:
+                    widget.lineEdit().textEdited.connect(drop)
+            elif isinstance(widget, QCheckBox):
+                widget.clicked.connect(drop)
+
+    @staticmethod
+    def _widget_value(widget):
+        if isinstance(widget, QLineEdit):
+            return widget.text()
+        if isinstance(widget, QComboBox):
+            return widget.currentText()
+        if isinstance(widget, QCheckBox):
+            return widget.isChecked()
+        return None
+
+    def _mark_default(self, key: str, widget):
+        """Record what was applied and light the field up.
+
+        Stores the value read back off the widget rather than the raw default,
+        so the later comparison comes from the same source and can't disagree
+        over formatting (a combo snapping to a matching entry, say).
+        """
+        self._defaulted[key] = self._widget_value(widget)
+        set_default_glow(widget, True)
+
+    def _clear_default_mark(self, key: str, *_):
+        if key not in self._defaulted:
+            return
+        del self._defaulted[key]
+        widget = self._indicator_map.get(key)
+        if widget is not None:
+            set_default_glow(widget, False)
+
+    def _clear_all_default_marks(self):
+        for widget in self._indicator_map.values():
+            set_default_glow(widget, False)
+        self._defaulted.clear()
+
+    def _refresh_default_marks(self):
+        """Drop the mark from any field whose value has moved off its default.
+
+        Called after a Colnect fetch, which writes with setText() and so never
+        trips the manual-edit signals. A field Colnect left alone keeps its
+        glow; one Colnect overwrote loses it.
+        """
+        for key in list(self._defaulted):
+            widget = self._indicator_map.get(key)
+            if widget is None or self._widget_value(widget) != self._defaulted[key]:
+                self._clear_default_mark(key)
+
+    def _has_copy_defaults(self) -> bool:
+        """True if any default describes a copy row (condition, quantity, origin)."""
+        return self._defaults.any_active(
+            ["copy_condition", "copy_quantity", *ORIGIN_KEY_MAP]
+        )
+
+    def _copy_row_defaults(self, fallback_condition: str = "Fine Used (FU)") -> tuple[str, int, dict]:
+        """The (condition, quantity, origin) a new copy row starts from.
+
+        Only values that are actually defaulted are filled in; anything else
+        falls back to what that row would have carried anyway. The condition
+        fallback differs by caller — the row built during a form reset stands in
+        for the one _set_add_mode() makes (Fine Used), while a row added by hand
+        stands in for a blank _add_copy_row() — so it is passed in rather than
+        assumed, and turning the origin defaults on never quietly changes the
+        condition an added row starts at.
+        """
+        d = self._defaults
+        origin = {
+            origin_key: str(d.values.get(key))
+            for key, origin_key in ORIGIN_KEY_MAP.items()
+            if d.is_on(key)
+        }
+        try:
+            quantity = int(d.get("copy_quantity", 1))
+        except (TypeError, ValueError):
+            quantity = 1
+        # A stored condition that is no longer one of the offered choices would
+        # leave the combo on its first entry (Mint Never Hinged) — silently
+        # wrong for every stamp in the batch. Fall back instead.
+        condition = str(d.get("copy_condition", ""))
+        if condition not in StampCopyService.CONDITIONS:
+            condition = fallback_condition
+        return condition, quantity, origin
+
+    def _add_default_copy_row(self):
+        """The '+ Add Row' handler: every row added by hand starts from the
+        batch defaults, so an extra copy doesn't save with no provenance.
+
+        This applies while editing an existing stamp too, not just while adding
+        a new one: reaching for '+ Add Row' on a stamp already in the collection
+        normally means another copy of it has just turned up, and that copy came
+        from the batch currently being entered. The row is editable either way,
+        so a wrong guess costs one trip through the Origin… dialog, while the
+        blank row it replaces cost silent data loss.
+        """
+        if self._has_copy_defaults():
+            self._add_copy_row(*self._copy_row_defaults(fallback_condition=""))
+        else:
+            self._add_copy_row()
 
     def _edit_defaults(self):
         dlg = DefaultsDialog(self, self._defaults, _FIELD_LABELS)
@@ -483,6 +624,14 @@ class FieldsPanel(Panel):
             self._defaults_cb.setChecked(self._defaults.active)
             self._defaults_cb.blockSignals(False)
             self._refresh_defaults_label()
+            # Switching batches mid-entry has to reach the stamp already on the
+            # form, not just the next one. Without this the form keeps the old
+            # batch's values while the indicator above it advertises the new
+            # ones — and the copy row's origin, which is tucked behind the
+            # Origin… button, would quietly save the previous batch's
+            # provenance. Matches what toggling the checkbox on already does.
+            if self.current_stamp_id is None:
+                self.apply_defaults()
 
     def _on_defaults_toggled(self, checked: bool):
         self._defaults.active = checked
@@ -525,6 +674,9 @@ class FieldsPanel(Panel):
             if stamp is None:
                 return
             self._set_edit_mode(stamp_id)
+            # A saved stamp holds saved values, never defaults — drop any marks
+            # left over from the new-stamp form this panel was showing before.
+            self._clear_all_default_marks()
 
             self._title_input.setText(stamp.title or "")
             self._country_input.setText(stamp.country or "")
@@ -576,7 +728,9 @@ class FieldsPanel(Panel):
                     c.condition, c.quantity, OriginService.origin_to_dict(c.origin)
                 )
 
-            # Variant set
+            # Variant set. No series inference here — that is Colnect-fetch
+            # only, so a saved stamp always shows exactly what was saved.
+            self._clear_series_variant_hint()
             self.current_variant_set_id = stamp.variant_set_id
             if stamp.variant_set_id and stamp.variant_set:
                 self._variant_set_lbl.setText(stamp.variant_set.name)
@@ -640,6 +794,75 @@ class FieldsPanel(Panel):
         )
         self._series_count_lbl.setVisible(True)
 
+    def _clear_series_variant_hint(self):
+        self._series_variant_hint_lbl.clear()
+        self._series_variant_hint_lbl.setVisible(False)
+
+    def _apply_series_variant_set(self):
+        """Infer this stamp's variant set from the rest of its series.
+
+        Called after a Colnect fetch has populated the form. Stamps in the
+        series that carry no variant set are ignored when deciding whether the
+        series agrees, but are still reported in the hint.
+
+        One set in use  -> tick variants and adopt it.
+        Several in use  -> leave the checkbox as Colnect left it and say so.
+        None in use     -> do nothing at all.
+        """
+        self._clear_series_variant_hint()
+
+        if not self.current_series_id:
+            return
+
+        def _n(count: int, singular: str, plural: str) -> str:
+            return f"{count} {singular if count == 1 else plural}"
+
+        session = SessionLocal()
+        try:
+            usage   = VariantSetService.get_series_usage(
+                session, self.current_series_id, exclude_stamp_id=self.current_stamp_id
+            )
+            sets    = usage["sets"]
+            without = usage["without"]
+
+            if not sets:
+                return
+
+            if len(sets) == 1:
+                vs_id, vs_name, count = sets[0]
+                self.current_variant_set_id = vs_id
+                self._variants_cb.setChecked(True)
+                self._variant_set_lbl.setText(vs_name)
+                self._variant_set_lbl.setStyleSheet("font-style: normal;")
+
+                vs    = session.get(VariantSet, vs_id)
+                notes = (vs.notes or "") if vs else ""
+                self._variant_set_notes_lbl.setText(notes)
+                self._variant_set_notes_lbl.setVisible(bool(notes))
+
+                body  = (f'✓ Applied "{vs_name}" from this series — used by '
+                         f'{_n(count, "other stamp", "other stamps")}.')
+                color = "green"
+            else:
+                listed = ", ".join(f'"{name}" ({c})' for _id, name, c in sets)
+                body   = (f"⚠ Stamps in this series use {len(sets)} different "
+                          f"variant sets: {listed}. Choose one.")
+                color  = "#b36b00"
+
+            if without:
+                body += (f' {_n(without, "stamp has", "stamps have")} '
+                         f"no variant set.")
+
+            self._series_variant_hint_lbl.setText(
+                f'<span style="color:{color}; font-size:10px;">'
+                f'{html.escape(body, quote=False)}</span>'
+            )
+            self._series_variant_hint_lbl.setVisible(True)
+        except Exception as e:
+            logger.warning(f"Failed to infer series variant set: {e}")
+        finally:
+            session.close()
+
     def fill_from_colnect(self, info: dict):
         """Populate fields from Colnect get-info result."""
         self._title_input.setText(info.get("name", ""))
@@ -694,6 +917,13 @@ class FieldsPanel(Panel):
         self._designers_input.setText(info.get("designers", ""))
         self._description_input.setText(info.get("description", ""))
         self._variants_cb.setChecked(bool(info.get("variants", False)))
+
+        # Runs last so a series consensus wins over Colnect's own variants flag.
+        self._apply_series_variant_set()
+
+        # Colnect writes fields with setText(), which never fires the manual-edit
+        # signals — so anything it overwrote has to be re-checked by hand.
+        self._refresh_default_marks()
 
         if self._themes_panel:
             self._themes_panel.load_themes()
@@ -943,6 +1173,7 @@ class FieldsPanel(Panel):
         self.collection_changed.emit()
 
     def _reset_form(self, clear_image: bool = False):
+        self._clear_all_default_marks()
         for le in (
             self._title_input, self._scott_input, self._country_input,
             self._series_input, self._emission_input, self._face_value_input,
@@ -959,6 +1190,7 @@ class FieldsPanel(Panel):
         self._variant_set_lbl.setStyleSheet("color: gray; font-style: italic;")
         self._variant_set_notes_lbl.setText("")
         self._variant_set_notes_lbl.setVisible(False)
+        self._clear_series_variant_hint()
         self.current_series_id = None
         self._series_url_btn.setEnabled(False)
         self._view_series_btn.setEnabled(False)
@@ -1081,13 +1313,32 @@ class FieldsPanel(Panel):
         del_btn.setFixedWidth(24)
         del_btn.clicked.connect(lambda: (row.setParent(None), row.deleteLater()))
 
-        origin_btn = QPushButton("Origin…")
-        origin_btn.setFixedWidth(64)
-        origin_lbl = QLabel(origin_summary(row._origin))
+        origin_lbl = QLabel()
         origin_lbl.setStyleSheet("color: gray; font-style: italic;")
         origin_lbl.setTextInteractionFlags(Qt.TextInteractionFlag.NoTextInteraction)
         origin_lbl.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Preferred)
+        self._set_origin_label(origin_lbl, row._origin)
+
+        # Split button: the body opens the origin editor exactly as the old
+        # plain button did, the arrow drops down the saved presets. Keeping it
+        # one control leaves the summary label its width — this row is tight.
+        origin_btn = QToolButton()
+        origin_btn.setText("Origin…")
+        origin_btn.setPopupMode(QToolButton.ToolButtonPopupMode.MenuButtonPopup)
+        origin_btn.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonTextOnly)
+        # Wider than the plain button it replaced, to seat the dropdown arrow.
+        # Kept as tight as the arrow allows — this width comes straight out of
+        # the origin summary beside it, which is why that label has a tooltip.
+        origin_btn.setFixedWidth(74)
         origin_btn.clicked.connect(lambda: self._edit_copy_origin(row, origin_lbl))
+
+        menu = QMenu(origin_btn)
+        # Rebuilt on every open: presets can be added or removed from inside
+        # this very menu, and from any other copy row's copy of it.
+        menu.aboutToShow.connect(
+            partial(self._rebuild_origin_menu, menu, row, origin_lbl)
+        )
+        origin_btn.setMenu(menu)
 
         # Keep the qty +/- cluster tight (spacing 0), but separate the logical
         # groups so the row doesn't read as one squished blob. The summary label
@@ -1105,11 +1356,119 @@ class FieldsPanel(Panel):
         rl.addWidget(origin_lbl, 1)
         self._copies_layout.addWidget(row)
 
+    @staticmethod
+    def _set_origin_label(origin_lbl, origin: dict | None):
+        """Write the row's origin summary, with the full text as a tooltip.
+
+        The label is free to shrink (Ignored size policy) and the row is narrow,
+        so the summary is routinely clipped — the tooltip is where the whole
+        thing stays readable.
+        """
+        summary = origin_summary(origin)
+        origin_lbl.setText(summary)
+        origin_lbl.setToolTip(summary)
+
     def _edit_copy_origin(self, row, origin_lbl):
         dlg = OriginDialog(self, row._origin)
         if dlg.exec() == QDialog.DialogCode.Accepted:
             row._origin = dlg.get_origin()
-            origin_lbl.setText(origin_summary(row._origin))
+            self._set_origin_label(origin_lbl, row._origin)
+
+    # ------------------------------------------------------------------
+    # Copy-row origin presets
+    # ------------------------------------------------------------------
+    #
+    # Saved origins that can be applied to any copy row, independently of the
+    # other rows. Applying one copies its values in and leaves nothing linked,
+    # so editing a preset later never rewrites a stamp already saved. Distinct
+    # from the batch defaults, which fill one origin into a new stamp's first
+    # row behind a global toggle.
+
+    def _rebuild_origin_menu(self, menu, row, origin_lbl):
+        menu.clear()
+        session = SessionLocal()
+        try:
+            presets = OriginPresetService.get_all(session)
+            entries = [
+                (p.id, p.name, OriginPresetService.to_origin(p)) for p in presets
+            ]
+        except Exception as e:
+            logger.warning(f"Could not load origin presets: {e}")
+            entries = []
+        finally:
+            session.close()
+
+        if entries:
+            for _pid, name, origin in entries:
+                act = menu.addAction(name)
+                act.setToolTip(origin_summary(origin))
+                act.triggered.connect(
+                    partial(self._apply_origin_preset, row, origin_lbl, origin)
+                )
+        else:
+            empty = menu.addAction("No presets saved yet")
+            empty.setEnabled(False)
+
+        menu.addSeparator()
+        edit_act = menu.addAction("Edit origin…")
+        edit_act.triggered.connect(
+            partial(self._edit_copy_origin, row, origin_lbl)
+        )
+        save_act = menu.addAction("Save as preset…")
+        save_act.triggered.connect(partial(self._save_origin_as_preset, row))
+        manage_act = menu.addAction("Manage presets…")
+        manage_act.triggered.connect(self._manage_origin_presets)
+
+    def _apply_origin_preset(self, row, origin_lbl, origin: dict, *_):
+        """Copy a preset's values into one copy row.
+
+        Merged over what the row already had rather than replacing it, so a
+        preset that only sets a location and dealer leaves a price already typed
+        on the row alone. to_origin() drops blank fields for this reason.
+        """
+        row._origin = {**row._origin, **origin}
+        self._set_origin_label(origin_lbl, row._origin)
+
+    def _save_origin_as_preset(self, row, *_):
+        origin = getattr(row, "_origin", {}) or {}
+        if not any(str(v or "").strip() for v in origin.values()):
+            QMessageBox.information(
+                self, "Nothing to Save",
+                "This copy row has no origin yet. Fill one in with Origin… "
+                "first, then save it as a preset.",
+            )
+            return
+
+        name, ok = QInputDialog.getText(
+            self, "Save Origin Preset",
+            "Name this preset:", text=origin_summary(origin)[:40],
+        )
+        if not ok or not name.strip():
+            return
+
+        session = SessionLocal()
+        try:
+            existing = OriginPresetService.get_all(session)
+            if any(p.name == name.strip() for p in existing):
+                if QMessageBox.question(
+                    self, "Overwrite Preset",
+                    f"A preset named '{name.strip()}' already exists.\n\n"
+                    "Overwrite it with these values?",
+                ) != QMessageBox.StandardButton.Yes:
+                    return
+            OriginPresetService.save(session, name, origin)
+        except Exception as e:
+            logger.error(f"Could not save origin preset: {e}")
+            QMessageBox.warning(self, "Save Failed", str(e))
+        finally:
+            session.close()
+
+    def _manage_origin_presets(self, *_):
+        try:
+            from ui.origin_presets import ManagePresetsDialog
+            ManagePresetsDialog(self).exec()
+        except Exception as e:
+            logger.warning(f"ManagePresetsDialog unavailable: {e}")
 
     def _clear_copies(self):
         while self._copies_layout.count():
@@ -1162,50 +1521,6 @@ class FieldsPanel(Panel):
         finally:
             session.close()
 
-    def _browse_country(self):
-        try:
-            from stamp_identifier_v3 import CountryPickerDialog
-            from PySide6.QtWidgets import QDialog
-            dlg = CountryPickerDialog(self)
-            if dlg.exec() == QDialog.DialogCode.Accepted and dlg.selected_name:
-                self._country_input.setText(dlg.selected_name)
-        except Exception as e:
-            logger.warning(f"CountryPickerDialog unavailable: {e}")
-
-    def _auto_expand_country(self, text: str):
-        """Instantly expand 2-letter codes on each keystroke only when unambiguous.
-        Longer codes (3+) are expanded on Tab/Enter/blur via editingFinished."""
-        try:
-            t = (text or "").strip()
-            if not t or len(t) > 2:
-                return
-            key = t.upper()
-            # If this text is a prefix of any longer COUNTRY_MAP key, wait —
-            # the user may still be typing (e.g. "US" while intending "USSR").
-            if any(k.startswith(key) and len(k) > len(key) for k in COUNTRY_MAP):
-                return
-            # Direct COUNTRY_MAP hit
-            if key in COUNTRY_MAP:
-                name = COUNTRY_MAP[key]
-                if name != text:
-                    self._country_input.blockSignals(True)
-                    try:
-                        self._country_input.setText(name)
-                    finally:
-                        self._country_input.blockSignals(False)
-                return
-            # For 2-letter codes not in the map, try pycountry
-            if len(t) == 2 and t.isalpha():
-                name = get_country_name(t)
-                if name and name != text:
-                    self._country_input.blockSignals(True)
-                    try:
-                        self._country_input.setText(name)
-                    finally:
-                        self._country_input.blockSignals(False)
-        except Exception:
-            pass
-
     def _open_series_url(self):
         if not self.current_series_id:
             return
@@ -1243,7 +1558,11 @@ class FieldsPanel(Panel):
             issued  = self._issued_input.text().strip()
             country = self._country_input.text().strip()
             year    = issued[:4] if issued else ""
-            dlg     = VariantSetDialog(self, title, year, country, self.current_variant_set_id)
+            dlg     = VariantSetDialog(
+                self, title, year, country, self.current_variant_set_id,
+                series_id=self.current_series_id,
+                exclude_stamp_id=self.current_stamp_id,
+            )
             if dlg.exec() == QDialog.DialogCode.Accepted:
                 self.current_variant_set_id = dlg.selected_id
                 if dlg.selected_id is not None:
@@ -1422,17 +1741,11 @@ class FieldsPanel(Panel):
         country_hl.setContentsMargins(0, 0, 0, 0)
         country_hl.setSpacing(2)
         self._country_input = _field("country")
-        self._country_input.editingFinished.connect(
-            lambda: self._country_input.setText(
-                get_country_name(self._country_input.text().strip())
-                or self._country_input.text()
-            )
-        )
-        self._country_input.textChanged.connect(self._auto_expand_country)
+        # Abbreviation expansion (live + on commit) and the picker button are
+        # shared with the Defaults dialog — see ui/country_field.py.
+        attach_country_expansion(self._country_input)
         self._country_input.textChanged.connect(self._schedule_duplicate_check)
-        country_browse = QPushButton("▼")
-        country_browse.setFixedWidth(24)
-        country_browse.clicked.connect(self._browse_country)
+        country_browse = make_country_browse_button(self._country_input, self)
         country_hl.addWidget(self._country_input)
         country_hl.addWidget(country_browse)
         country_hl.addStretch()   # pin input+button left so it aligns with the column
@@ -1575,6 +1888,14 @@ class FieldsPanel(Panel):
         self._variant_set_notes_lbl.setVisible(False)
         outer.addWidget(self._variant_set_notes_lbl)
 
+        # What the rest of the series does about variant sets. Deliberately not
+        # tied to the variants checkbox: the "series disagrees" case leaves the
+        # box unticked, and that is exactly when this needs to be readable.
+        self._series_variant_hint_lbl = QLabel("")
+        self._series_variant_hint_lbl.setWordWrap(True)
+        self._series_variant_hint_lbl.setVisible(False)
+        outer.addWidget(self._series_variant_hint_lbl)
+
         self._variants_cb.toggled.connect(self._variant_set_row.setVisible)
         self._variants_cb.toggled.connect(
             lambda checked: self._variant_set_notes_lbl.setVisible(
@@ -1624,7 +1945,7 @@ class FieldsPanel(Panel):
         copies_header.addStretch()
         add_copy_btn = QPushButton("+ Add Row")
         add_copy_btn.setFixedWidth(90)
-        add_copy_btn.clicked.connect(lambda: self._add_copy_row())
+        add_copy_btn.clicked.connect(self._add_default_copy_row)
         copies_header.addWidget(add_copy_btn)
         outer.addLayout(copies_header)
 

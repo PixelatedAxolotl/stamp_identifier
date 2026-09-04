@@ -31,8 +31,8 @@ from db.session import SessionLocal
 from db.service import (
     ThemeService, PhysicalLocationService, StampCopyService, OriginService,
 )
-from helper_utils import get_country_name
 from logger import logger
+from ui.country_field import attach_country_expansion, make_country_browse_button
 
 
 # Stamp fields that can carry a default, in the order they appear in the
@@ -327,7 +327,13 @@ class DefaultsDialog(QDialog):
         self._grid.addWidget(lbl, row, 0, 1, 3)
 
     def _add_row(self, key: str, editor: QWidget, label: str | None = None,
-                 align_top: bool = False):
+                 align_top: bool = False, container: QWidget | None = None):
+        """Add one checkbox + label + editor row.
+
+        `container` is the widget actually placed in the grid when the editor
+        needs company (the Country row pairs its box with a picker button);
+        `editor` stays the widget that is read and auto-ticked either way.
+        """
         row = self._grid.rowCount()
         cb  = QCheckBox()
         cb.setChecked(bool(self._defaults.enabled.get(key)))
@@ -337,7 +343,7 @@ class DefaultsDialog(QDialog):
         flags = Qt.AlignmentFlag.AlignTop if align_top else Qt.AlignmentFlag(0)
         self._grid.addWidget(cb, row, 0, flags)
         self._grid.addWidget(QLabel(label or _label_for(key, self._field_labels)), row, 1, flags)
-        self._grid.addWidget(editor, row, 2)
+        self._grid.addWidget(container if container is not None else editor, row, 2)
         self._checks[key]  = cb
         self._editors[key] = editor
         # Typing a value implies wanting it: tick the row so a filled-in default
@@ -361,6 +367,27 @@ class DefaultsDialog(QDialog):
         elif isinstance(editor, QListWidget):
             editor.itemSelectionChanged.connect(tick)
 
+    def _wrap_country(self, editor: QLineEdit) -> QWidget:
+        """Give the Country box the same behaviour it has in the Fields panel:
+        live + on-commit code expansion, and the picker button beside it."""
+        attach_country_expansion(editor)
+
+        def picked(*_):
+            # The picker writes with setText, which emits no textEdited, so the
+            # row's own auto-tick never sees it. Tick explicitly. Looked up at
+            # click time because _add_row has not made the checkbox yet.
+            cb = self._checks.get("country")
+            if cb is not None and not cb.isChecked():
+                cb.setChecked(True)
+
+        wrap = QWidget()
+        row  = QHBoxLayout(wrap)
+        row.setContentsMargins(0, 0, 0, 0)
+        row.setSpacing(2)
+        row.addWidget(editor, 1)
+        row.addWidget(make_country_browse_button(editor, self, on_selected=picked))
+        return wrap
+
     def _build_rows(self):
         vals = self._defaults.values
 
@@ -377,19 +404,19 @@ class DefaultsDialog(QDialog):
                 editor.setCurrentIndex(max(idx, 0))
             else:
                 editor = QLineEdit(str(stored or ""))
-            self._add_row(key, editor)
-
-        # Expand country codes the same way the real Country field does.
-        country = self._editors.get("country")
-        if isinstance(country, QLineEdit):
-            country.editingFinished.connect(
-                lambda: country.setText(
-                    get_country_name(country.text().strip()) or country.text()
-                )
-            )
+            if key == "country":
+                self._add_row(key, editor, container=self._wrap_country(editor))
+            else:
+                self._add_row(key, editor)
 
         self._add_header("Placement")
+        # Editable so a physical location that doesn't exist yet can be named
+        # here, the same way the acquisition combos accept new entries. A new
+        # name is created in the database on OK (see _commit_new_location), so
+        # that by the time the default is applied the Fields panel's own
+        # dropdown actually offers it.
         loc = QComboBox()
+        loc.setEditable(True)
         loc.addItem("")
         loc.addItems(self._locations)
         loc.setCurrentText(str(vals.get("physical_location") or ""))
@@ -485,11 +512,35 @@ class DefaultsDialog(QDialog):
             return [i.text() for i in editor.selectedItems()]
         return None
 
+    def _commit_new_location(self, name: str):
+        """Create a physical location that was typed in rather than picked.
+
+        Unlike the acquisition location/dealer — which are created on demand
+        when a stamp is saved (OriginService.build_origin) — a physical location
+        is stored by id, so one that doesn't exist yet could never be selected
+        and the default would silently do nothing.
+        """
+        name = (name or "").strip()
+        if not name or name in self._locations:
+            return
+        session = SessionLocal()
+        try:
+            PhysicalLocationService.create(session, name)
+            logger.info(f"Created physical location '{name}' from stamp defaults")
+        except ValueError:
+            pass          # already exists — nothing to do
+        except Exception as e:
+            logger.error(f"Could not create physical location '{name}': {e}")
+        finally:
+            session.close()
+
     def accept(self):
         d = self._defaults
         d.active = self._master_cb.isChecked()
         for key in self._editors:
             d.values[key]  = self._read_editor(key)
             d.enabled[key] = self._checks[key].isChecked()
+        if d.enabled.get("physical_location"):
+            self._commit_new_location(d.values.get("physical_location"))
         d.save()
         super().accept()

@@ -66,6 +66,29 @@ def apply_card_glow(widget: QWidget) -> None:
     widget.setGraphicsEffect(glow)
 
 
+# Azure, sitting between the skin's violet (#8a6cff) and cyan (#74e0c9) accents
+# so it reads as a distinct "this is information" blue rather than more theme.
+_DEFAULT_GLOW_COLOR = QColor(92, 157, 255, 170)
+
+
+def set_default_glow(widget: QWidget, on: bool) -> None:
+    """Mark (or unmark) a form field as still holding a batch-default value.
+
+    Unlike apply_card_glow this carries meaning rather than decoration — it says
+    where a value came from — so it renders in both skins instead of no-opping
+    on textures. Form fields carry no other QGraphicsEffect, so replacing the
+    widget's effect wholesale is safe; the effect is parented to `widget`.
+    """
+    if on:
+        glow = QGraphicsDropShadowEffect(widget)
+        glow.setBlurRadius(14)
+        glow.setColor(_DEFAULT_GLOW_COLOR)
+        glow.setOffset(0, 0)
+        widget.setGraphicsEffect(glow)
+    else:
+        widget.setGraphicsEffect(None)
+
+
 def hide_scrollbars(area: QAbstractScrollArea) -> None:
     """Hide both scrollbars (and reclaim their gutters) on a scrollable widget.
 
