@@ -17,11 +17,15 @@ from .base import Base
 #Base = declarative_base()
 
 # Many-to-many bridge table for stamps and themes
+#
+# The composite primary key already indexes (stamp_id, theme_id), which serves
+# lookups by stamp; theme_id needs its own index to serve the reverse direction
+# (Theme -> stamps), which the themes-by-recent-use query joins on.
 stamp_theme_association = Table(
     "stamp_theme_association",
     Base.metadata,
     Column("stamp_id", Integer, ForeignKey("stamps.id"), primary_key=True),
-    Column("theme_id", Integer, ForeignKey("themes.id"), primary_key=True),
+    Column("theme_id", Integer, ForeignKey("themes.id"), primary_key=True, index=True),
 )
 
 class Series(Base):
@@ -63,7 +67,9 @@ class Stamp(Base):
     id = Column(Integer, primary_key=True, autoincrement=True)
     title = Column(String, nullable=False)
     scott_number = Column(String, nullable=False)
-    country = Column(String, nullable=False)
+    # Indexed separately from uq_scott_country: that index leads on
+    # scott_number, so it cannot serve the Database panel's country-only filter.
+    country = Column(String, nullable=False, index=True)
     series = Column(String)
     issued_date = Column(DateTime, nullable=True)
     expired_date = Column(DateTime, nullable=True)
@@ -82,12 +88,15 @@ class Stamp(Base):
     description = Column(Text)
     variants = Column(Boolean, default=False)
     owned = Column(Boolean, default=True, nullable=False)
-    variant_set_id = Column(Integer, ForeignKey("variant_sets.id", ondelete="SET NULL"), nullable=True)
-    series_id            = Column(Integer, ForeignKey("series.id", ondelete="SET NULL"), nullable=True)
-    physical_location_id = Column(Integer, ForeignKey("physical_locations.id", ondelete="SET NULL"), nullable=True)
+    # Postgres does not index foreign keys on its own, and every one of these is
+    # a lookup key for a panel (variant set / series / location browsing).
+    variant_set_id = Column(Integer, ForeignKey("variant_sets.id", ondelete="SET NULL"), nullable=True, index=True)
+    series_id            = Column(Integer, ForeignKey("series.id", ondelete="SET NULL"), nullable=True, index=True)
+    physical_location_id = Column(Integer, ForeignKey("physical_locations.id", ondelete="SET NULL"), nullable=True, index=True)
 
     # Timestamps
-    added_to_db = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+    # added_to_db is indexed because it is the Gallery's default sort order.
+    added_to_db = Column(DateTime(timezone=True), server_default=func.now(), nullable=False, index=True)
     last_updated = Column(DateTime(timezone=True), onupdate=func.now())
 
     # Relationship to themes
@@ -116,7 +125,7 @@ class StampCopy(Base):
     __tablename__ = "stamp_copies"
 
     id        = Column(Integer, primary_key=True, autoincrement=True)
-    stamp_id  = Column(Integer, ForeignKey("stamps.id", ondelete="CASCADE"), nullable=False)
+    stamp_id  = Column(Integer, ForeignKey("stamps.id", ondelete="CASCADE"), nullable=False, index=True)
     condition = Column(String, nullable=False)
     quantity  = Column(Integer, nullable=False, default=1)
     notes     = Column(String, nullable=True)
@@ -154,6 +163,35 @@ class Dealer(Base):
     origins = relationship("StampCopyOrigin", back_populates="dealer")
 
 
+class OriginPreset(Base):
+    """A named, reusable acquisition origin — "Albany Show 2019", "eBay · kstamps".
+
+    A template for filling in a copy row, not a record of one. Applying a preset
+    copies its values into the row and leaves nothing linked, so editing or
+    deleting a preset never rewrites the provenance of a stamp already saved.
+    That separation is the point: an acquisition record is history.
+
+    Deliberately distinct from the batch defaults in ui/field_defaults.py, which
+    pre-fill one origin into a new stamp's first copy row behind a global
+    toggle. Presets are picked per row, at any time.
+
+    Every field is text, matching the dict OriginDialog passes around, so a
+    preset round-trips through the form exactly as it was typed. The parsed,
+    normalised values live on StampCopyOrigin.
+    """
+    __tablename__ = "origin_presets"
+
+    id            = Column(Integer, primary_key=True, autoincrement=True)
+    name          = Column(String, nullable=False, unique=True)
+    location      = Column(String, nullable=True)
+    dealer        = Column(String, nullable=True)
+    method        = Column(String, nullable=True)
+    price         = Column(String, nullable=True)
+    acquired_date = Column(String, nullable=True)
+    notes         = Column(String, nullable=True)
+    created_at    = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+
+
 class StampCopyOrigin(Base):
     """Provenance for a single StampCopy: where and how it was acquired."""
     __tablename__ = "stamp_copy_origins"
@@ -162,9 +200,9 @@ class StampCopyOrigin(Base):
     copy_id       = Column(Integer, ForeignKey("stamp_copies.id", ondelete="CASCADE"),
                            nullable=False, unique=True)
     location_id   = Column(Integer, ForeignKey("origin_locations.id", ondelete="SET NULL"),
-                           nullable=True)
+                           nullable=True, index=True)
     dealer_id     = Column(Integer, ForeignKey("dealers.id", ondelete="SET NULL"),
-                           nullable=True)
+                           nullable=True, index=True)
     method        = Column(String, nullable=True)   # bought / given / traded / ...
     price         = Column(Numeric(10, 2), nullable=True)
     acquired_date = Column(DateTime, nullable=True)
@@ -179,7 +217,7 @@ class StampImage(Base):
     __tablename__ = 'stamp_images'
 
     id = Column(Integer, primary_key=True)
-    stamp_id = Column(Integer, ForeignKey('stamps.id', ondelete="CASCADE"), nullable=False)
+    stamp_id = Column(Integer, ForeignKey('stamps.id', ondelete="CASCADE"), nullable=False, index=True)
     file_path = Column(String, nullable=False)  # Path to local image
 
     stamp = relationship("Stamp", back_populates="images")

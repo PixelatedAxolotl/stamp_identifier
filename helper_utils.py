@@ -1,5 +1,8 @@
 import json
 import os
+import re
+import unicodedata
+
 import pycountry
 from config import COUNTRY_OVERRIDES_FILE, TAG_ALIASES_FILE, THEME_IMPLICATIONS_FILE
 
@@ -72,6 +75,54 @@ def get_country_name(code: str) -> str | None:
         pass
 
     return None
+
+
+def parse_face_value(value: str) -> float | None:
+    """Extract the numeric magnitude from a face value string.
+
+    Stamps store face value in Colnect's canonical form — "3 ¢ - United States
+    cent", "0.40 mk - Finnish markka", "10 Soviet kopek" — where the magnitude
+    always leads. Visual search filters on the magnitude alone, because that is
+    what gets typed into the field: "3", not the whole string.
+
+    Deliberately ignores the currency. A typed "3" is meant to match a 3-cent
+    stamp, and asking the user to disambiguate cent from penny would defeat the
+    point of a quick filter; country is the field that separates those.
+
+    Handles the three shapes present in the data:
+      - plain decimals            "2.10 kr - Swedish krona"   -> 2.10
+      - vulgar fractions          "½ p - Guernsey penny"      -> 0.5
+      - semipostal value+surtax   "55+25 ct - Euro cent"      -> 55.0 (face only)
+
+    Returns None when there is no leading magnitude, which is the correct answer
+    for the no-face-value stamps ("FOREVER º - No Face Value").
+    """
+    if not value:
+        return None
+
+    text = str(value).strip()
+    if not text:
+        return None
+
+    # A leading vulgar fraction (½, ⅛, ⅜ …) is a single character carrying its
+    # own numeric value; the decimal regex below cannot see it. Guarded on the
+    # character being non-ASCII because unicodedata.numeric("1") is also 1.0 —
+    # without the guard a plain "13" would parse as its first digit alone.
+    if not text[0].isascii():
+        try:
+            return float(unicodedata.numeric(text[0]))
+        except (TypeError, ValueError):
+            pass
+
+    # Leading decimal, with "," accepted as a decimal separator. Anything after
+    # a "+" is surtax on a semipostal, not face value, so the match stops there.
+    m = re.match(r"\s*(\d+(?:[.,]\d+)?)", text)
+    if not m:
+        return None
+    try:
+        return float(m.group(1).replace(",", "."))
+    except ValueError:
+        return None
 
 
 def load_tag_aliases() -> dict:

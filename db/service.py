@@ -5,11 +5,12 @@ Provides clean CRUD operations for stamps, themes, and images.
 from datetime import datetime
 import re
 from sqlalchemy import and_, or_
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, selectinload
 from sqlalchemy.exc import IntegrityError
 from db.models import (
     Stamp, StampImage, StampCopy, StampCopyOrigin, OriginLocation, Dealer,
-    Theme, VariantSet, PhysicalLocation, Series, stamp_theme_association,
+    OriginPreset, Theme, VariantSet, PhysicalLocation, Series,
+    stamp_theme_association,
 )
 from db.gallery_filters import FT, FIELDS_BY_KEY, build_clause
 from logger import logger
@@ -234,7 +235,17 @@ class StampService:
     @staticmethod
     def get_stamps_by_country(session: Session, country: str) -> list[dict]:
         """Get all stamps in a country."""
-        stamps = session.query(Stamp).filter_by(country=country).all()
+        # selectinload, not lazy: the comprehension below reads s.images on every
+        # row, which would otherwise emit one SELECT per stamp. This list can run
+        # to hundreds of rows and is rebuilt on every save, so the N+1 is the
+        # single most expensive thing the Database panel does. See the same
+        # pattern on the other list queries in this module.
+        stamps = (
+            session.query(Stamp)
+            .options(selectinload(Stamp.images))
+            .filter_by(country=country)
+            .all()
+        )
         return [
             {
                 "id": s.id,
@@ -340,6 +351,11 @@ class StampService:
         total = q.count()
         if limit is not None:
             q = q.offset(offset).limit(limit)
+
+        # Eager-load images after the count and the limit: counting a query with
+        # a selectinload is wasted work, and the extra SELECT should cover only
+        # the page being returned, not every matching row.
+        q = q.options(selectinload(Stamp.images))
 
         return [
             {
@@ -518,6 +534,55 @@ class ImageService:
         return session.query(StampImage).filter_by(stamp_id=stamp_id).all()
 
     @staticmethod
+    def get_visual_candidates(
+        session: Session,
+        country: str | None = None,
+        face_value: str | float | None = None,
+    ) -> list[dict]:
+        """Images eligible for a visual search, narrowed by country and value.
+
+        Returns dicts of stamp_id / title / scott_number / country / face_value
+        / file_path, one per image, ready to be shown as a result row.
+
+        Both filters are optional and independent; passing neither returns the
+        whole collection, which is a valid but slow search (see visual_search).
+
+        Country is filtered in SQL, value is not. Face values are stored in
+        Colnect's canonical form ("3 ¢ - United States cent") while the field
+        holds a bare number, so matching needs parse_face_value rather than a
+        LIKE — and country has already cut the row count to at most a few
+        hundred by then, which makes the Python pass free in practice.
+
+        Stamps whose value cannot be parsed (genuine no-face-value issues) are
+        excluded only when a value filter is actually supplied; they should not
+        vanish from an unfiltered search.
+        """
+        from helper_utils import parse_face_value
+
+        q = session.query(
+            StampImage.file_path,
+            Stamp.id, Stamp.title, Stamp.scott_number, Stamp.country, Stamp.face_value,
+        ).join(Stamp, StampImage.stamp_id == Stamp.id)
+
+        if country:
+            q = q.filter(Stamp.country == country)
+
+        target = parse_face_value(face_value) if isinstance(face_value, str) else face_value
+        rows = q.all()
+
+        out = []
+        for path, sid, title, scott, ctry, fv in rows:
+            if target is not None:
+                parsed = parse_face_value(fv)
+                if parsed is None or abs(parsed - target) > 1e-9:
+                    continue
+            out.append({
+                "stamp_id": sid, "title": title, "scott_number": scott,
+                "country": ctry, "face_value": fv, "file_path": path,
+            })
+        return out
+
+    @staticmethod
     def reassign_image(session: Session, file_path: str, from_stamp_id: int, to_stamp_id: int) -> bool:
         """Move a StampImage record from one stamp to another."""
         img = session.query(StampImage).filter_by(
@@ -603,6 +668,7 @@ class SeriesService:
     def get_stamps(session: Session, series_id: int) -> list[dict]:
         stamps = (
             session.query(Stamp)
+            .options(selectinload(Stamp.images))
             .filter_by(series_id=series_id)
             .order_by(Stamp.scott_number)
             .all()
@@ -686,6 +752,87 @@ class StampCopyService:
             session.commit()
         else:
             session.flush()
+
+
+class OriginPresetService:
+    """Named, reusable acquisition origins applied to individual copy rows.
+
+    Presets are templates: to_origin() hands back a plain dict the copy row
+    copies in, and nothing stays linked afterwards. Editing or deleting a preset
+    never touches a stamp that was already saved with it.
+
+    Separate from the batch defaults (ui/field_defaults.py), which pre-fill one
+    origin into a new stamp's first row behind a global toggle.
+    """
+
+    # The origin-dict keys a preset carries, mapped to their column names. The
+    # dict shape is OriginDialog's, so a preset round-trips through the form.
+    FIELDS = {
+        "location":      "location",
+        "dealer":        "dealer",
+        "method":        "method",
+        "price":         "price",
+        "acquired_date": "acquired_date",
+        "notes":         "notes",
+    }
+
+    @staticmethod
+    def get_all(session: Session) -> list[OriginPreset]:
+        return session.query(OriginPreset).order_by(OriginPreset.name).all()
+
+    @staticmethod
+    def to_origin(preset: OriginPreset) -> dict:
+        """The preset as an origin dict, dropping empties so an unset field
+        falls through to whatever the row already had."""
+        return {
+            key: (getattr(preset, col) or "")
+            for key, col in OriginPresetService.FIELDS.items()
+            if (getattr(preset, col) or "").strip()
+        }
+
+    @staticmethod
+    def save(session: Session, name: str, origin: dict) -> OriginPreset:
+        """Create a preset, or overwrite the one already using this name."""
+        name = (name or "").strip()
+        if not name:
+            raise ValueError("Preset name cannot be empty.")
+
+        preset = session.query(OriginPreset).filter_by(name=name).one_or_none()
+        if preset is None:
+            preset = OriginPreset(name=name)
+            session.add(preset)
+        for key, col in OriginPresetService.FIELDS.items():
+            setattr(preset, col, (str(origin.get(key) or "").strip()) or None)
+        session.commit()
+        logger.info(f"Saved origin preset: {name}")
+        return preset
+
+    @staticmethod
+    def rename(session: Session, preset_id: int, new_name: str) -> OriginPreset:
+        new_name = (new_name or "").strip()
+        if not new_name:
+            raise ValueError("Preset name cannot be empty.")
+        clash = session.query(OriginPreset).filter_by(name=new_name).one_or_none()
+        if clash and clash.id != preset_id:
+            raise ValueError(f"An origin preset named '{new_name}' already exists.")
+        preset = session.get(OriginPreset, preset_id)
+        if not preset:
+            raise ValueError("Origin preset not found.")
+        preset.name = new_name
+        session.commit()
+        logger.info(f"Renamed origin preset {preset_id} -> '{new_name}'")
+        return preset
+
+    @staticmethod
+    def delete(session: Session, preset_id: int) -> bool:
+        preset = session.get(OriginPreset, preset_id)
+        if not preset:
+            return False
+        name = preset.name
+        session.delete(preset)
+        session.commit()
+        logger.info(f"Deleted origin preset: {name}")
+        return True
 
 
 class OriginService:
@@ -847,6 +994,7 @@ class PhysicalLocationService:
     def get_stamps(session: Session, location_id: int) -> list[dict]:
         stamps = (
             session.query(Stamp)
+            .options(selectinload(Stamp.images))
             .filter_by(physical_location_id=location_id)
             .order_by(Stamp.country, Stamp.scott_number)
             .all()
@@ -922,8 +1070,54 @@ class VariantSetService:
             session.commit()
 
     @staticmethod
+    def get_series_usage(
+        session: Session, series_id: int, exclude_stamp_id: int | None = None
+    ) -> dict:
+        """Summarise which variant sets the other stamps in a series use.
+
+        Returns a dict with:
+          sets     - [(id, name, count), ...] ordered most-used first, one entry
+                     per distinct variant set in use across the series
+          without  - how many stamps in the series have no variant set at all
+          total    - stamps considered (excluding exclude_stamp_id)
+
+        Stamps with no variant set are counted in `without` but never block a
+        consensus; callers decide what to do when sets has exactly one entry.
+        """
+        q = session.query(Stamp.variant_set_id).filter(Stamp.series_id == series_id)
+        if exclude_stamp_id is not None:
+            q = q.filter(Stamp.id != exclude_stamp_id)
+        ids = [row[0] for row in q.all()]
+
+        without = sum(1 for i in ids if i is None)
+        counts: dict[int, int] = {}
+        for i in ids:
+            if i is not None:
+                counts[i] = counts.get(i, 0) + 1
+
+        sets: list[tuple[int, str, int]] = []
+        if counts:
+            rows = (
+                session.query(VariantSet)
+                .filter(VariantSet.id.in_(list(counts.keys())))
+                .all()
+            )
+            names = {vs.id: vs.name for vs in rows}
+            sets = sorted(
+                ((i, names.get(i, f"#{i}"), c) for i, c in counts.items()),
+                key=lambda t: (-t[2], t[1].lower()),
+            )
+
+        return {"sets": sets, "without": without, "total": len(ids)}
+
+    @staticmethod
     def get_stamps(session: Session, variant_set_id: int) -> list[dict]:
-        stamps = session.query(Stamp).filter_by(variant_set_id=variant_set_id).all()
+        stamps = (
+            session.query(Stamp)
+            .options(selectinload(Stamp.images))
+            .filter_by(variant_set_id=variant_set_id)
+            .all()
+        )
         return [
             {
                 "id":           s.id,

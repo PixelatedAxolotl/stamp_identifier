@@ -14,6 +14,8 @@ and is used to roll a move back if the save that triggered it fails.
 import os
 import shutil
 
+from send2trash import send2trash
+
 from config import IMAGE_DIR, INCOMING_DIR
 from logger import logger
 
@@ -32,6 +34,39 @@ def _unique_dest(directory: str, filename: str) -> str:
 
 def _in_dir(path: str, directory: str) -> bool:
     return os.path.normpath(os.path.dirname(path)) == os.path.normpath(directory)
+
+
+def duplicate_incoming(path: str) -> str:
+    """Copy an incoming image alongside itself, returning the new path.
+
+    Used to enter one photo as two separate stamps. shutil.copy is deliberate
+    where the rest of this module uses move: copy2 would carry the original's
+    mtime across, and the strip sorts by mtime — the duplicate would file itself
+    next to its source instead of arriving at the top like any other new image.
+    """
+    if not path or not os.path.exists(path):
+        raise FileNotFoundError(f"Cannot duplicate missing image: {path}")
+
+    os.makedirs(INCOMING_DIR, exist_ok=True)
+    dest = _unique_dest(INCOMING_DIR, os.path.basename(path))
+    shutil.copy(path, dest)
+    logger.info(f"Duplicated incoming image: {path} -> {dest}")
+    return dest
+
+
+def trash_image(path: str) -> None:
+    """Send an image to the OS recycle bin.
+
+    Recoverable by design — the caller does not prompt before this, so the
+    recycle bin is the undo. send2trash needs a real absolute path; the storage
+    directories are configured relative to the working directory, so the path
+    arriving here usually is not one.
+    """
+    if not path or not os.path.exists(path):
+        raise FileNotFoundError(f"Cannot delete missing image: {path}")
+
+    send2trash(os.path.abspath(path))
+    logger.info(f"Sent image to recycle bin: {path}")
 
 
 def associate_image(path: str) -> str:

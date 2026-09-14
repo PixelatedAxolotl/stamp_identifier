@@ -35,7 +35,7 @@ from PySide6.QtWidgets import (
 )
 from PySide6.QtGui import QPixmap, QIcon, QPainter, QPen, QColor, QDesktopServices
 from PySide6.QtCore import Qt, QTimer, QSize, QRect, QRectF, QUrl, QEvent
-from PIL import Image
+from PIL import Image, ImageOps
 import base64
 
 from db.session import SessionLocal
@@ -370,7 +370,9 @@ class VariantSetDialog(QDialog):
     _COLS  = 3
 
     def __init__(self, parent, stamp_title: str, stamp_year: str,
-                 stamp_country: str, current_id: int | None):
+                 stamp_country: str, current_id: int | None,
+                 series_id: int | None = None,
+                 exclude_stamp_id: int | None = None):
         super().__init__(parent)
         self.setWindowTitle("Variant Sets")
         self.setMinimumSize(640, 440)
@@ -378,6 +380,21 @@ class VariantSetDialog(QDialog):
         self._stamp_title    = stamp_title
         self._stamp_year     = stamp_year
         self._stamp_country  = stamp_country
+        self._series_id      = series_id
+
+        # Variant sets already used elsewhere in this stamp's series.
+        self._series_set_ids: set[int] = set()
+        if series_id is not None:
+            session = SessionLocal()
+            try:
+                usage = VariantSetService.get_series_usage(
+                    session, series_id, exclude_stamp_id=exclude_stamp_id
+                )
+                self._series_set_ids = {i for i, _n, _c in usage["sets"]}
+            except Exception as e:
+                logger.warning(f"Failed to read series variant sets: {e}")
+            finally:
+                session.close()
 
         layout = QVBoxLayout(self)
         layout.addWidget(QLabel("Select an existing variant set or create a new one.\n"
@@ -391,6 +408,16 @@ class VariantSetDialog(QDialog):
         left_layout = QVBoxLayout(left_panel)
         left_layout.setContentsMargins(0, 0, 0, 0)
         left_layout.setSpacing(4)
+
+        # Series filter — starts on when the series already uses variant sets,
+        # so the likely candidates are what you see first.
+        self._series_only_cb = QCheckBox(
+            f"Only sets used in this series ({len(self._series_set_ids)})"
+        )
+        self._series_only_cb.setVisible(bool(self._series_set_ids))
+        self._series_only_cb.setChecked(bool(self._series_set_ids))
+        self._series_only_cb.toggled.connect(lambda _checked: self._load_list())
+        left_layout.addWidget(self._series_only_cb)
 
         self._search = QLineEdit()
         self._search.setPlaceholderText("Search variant sets…")
@@ -452,17 +479,31 @@ class VariantSetDialog(QDialog):
         return self._selected_id
 
     def _load_list(self):
+        # The already-selected set stays listed even when it is not part of the
+        # series, so narrowing the list can never silently drop the current
+        # choice.
+        allowed = None
+        if getattr(self, "_series_only_cb", None) and self._series_only_cb.isChecked():
+            allowed = set(self._series_set_ids)
+            if self._selected_id is not None:
+                allowed.add(self._selected_id)
+
         self.vs_list.clear()
         session = SessionLocal()
         try:
             for vs in VariantSetService.get_all(session):
+                if allowed is not None and vs.id not in allowed:
+                    continue
                 item = QListWidgetItem(vs.name)
                 item.setData(Qt.UserRole, vs.id)
+                if vs.id in self._series_set_ids:
+                    item.setToolTip("Already used by other stamps in this series")
                 self.vs_list.addItem(item)
                 if vs.id == self._selected_id:
                     self.vs_list.setCurrentItem(item)
         finally:
             session.close()
+        self._filter_list(self._search.text())
 
     def _filter_list(self, text: str):
         text = text.strip().lower()
@@ -1181,7 +1222,14 @@ class CropDialog(QDialog):
         layout.setContentsMargins(8, 8, 8, 8)
         layout.setSpacing(6)
 
-        self._canvas = _CropCanvas(QPixmap(image_path))
+        # Phone photos are stored in the camera's native landscape buffer with
+        # an EXIF Orientation tag saying how to turn them upright. QPixmap(path)
+        # ignores that tag, so a portrait photo would lie on its side here even
+        # though the History strip and the Preview panel — which both honour
+        # EXIF — show it upright. Load it the same way they do, and crop in that
+        # same upright space (see _apply).
+        from ui.panels.history import load_pixmap
+        self._canvas = _CropCanvas(load_pixmap(image_path))
         layout.addWidget(self._canvas, 1)
 
         hint = QLabel("Click and drag to select the crop area, then click Apply.")
@@ -1209,8 +1257,20 @@ class CropDialog(QDialog):
             return
         x1, y1, x2, y2 = rect
         try:
-            img = Image.open(self._image_path)
-            img.crop((x1, y1, x2, y2)).save(self._image_path)
+            with Image.open(self._image_path) as img:
+                # The selection coordinates are in the upright (EXIF-applied)
+                # image the canvas displayed, so rotate the pixels to match
+                # before cropping — Image.open() alone hands back the raw
+                # sideways buffer, whose axes are swapped relative to the
+                # rectangle the user dragged.
+                #
+                # exif_transpose() also drops the now-satisfied Orientation tag.
+                # Baking the rotation in is what keeps the result upright: the
+                # save below writes no EXIF, so a file that kept the raw pixels
+                # would lose the tag telling every reader to rotate it and end
+                # up permanently on its side.
+                upright = ImageOps.exif_transpose(img)
+                upright.crop((x1, y1, x2, y2)).save(self._image_path)
             self.accept()
         except Exception as e:
             QMessageBox.critical(self, "Crop Failed", str(e))

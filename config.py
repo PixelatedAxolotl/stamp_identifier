@@ -57,8 +57,30 @@ os.makedirs(IMAGE_DIR, exist_ok=True)
 INCOMING_DIR = os.getenv("STAMP_INCOMING_DIR", "storage/incoming")
 os.makedirs(INCOMING_DIR, exist_ok=True)
 
+# ============ VISUAL SEARCH ============
+# Cache of per-image fingerprints (perceptual hash + ORB descriptors) used by
+# visual_search.py to match a query image against images already in the
+# collection. Derived data only — safe to delete, it rebuilds on next use.
+VISUAL_CACHE_FILE = os.getenv("STAMP_VISUAL_CACHE", "storage/visual_cache.sqlite")
+
+# Longest edge, in pixels, that an image is scaled to before fingerprinting.
+# Every stored image is normalised to this so keypoints are computed at a
+# comparable scale across a collection whose originals run from 222px to
+# nearly 4000px on a side.
+VISUAL_NORM_SIZE = int(os.getenv("STAMP_VISUAL_NORM_SIZE", "512"))
+
+# Hamming distance (out of 64) below which two perceptual hashes are treated as
+# the same picture rather than merely a similar one. 8 is the conventional
+# threshold; raise it to catch more re-encodes, lower it to be stricter.
+VISUAL_DUP_THRESHOLD = int(os.getenv("STAMP_VISUAL_DUP_THRESHOLD", "8"))
+
 # ============ LAYOUT PERSISTENCE ============
 LAYOUT_FILE = os.getenv("STAMP_LAYOUT_FILE", "storage/layout.json")
+
+# ============ PHONE IMPORT ============
+# Filenames already pulled off a USB-connected iPhone, so a photo is copied into
+# INCOMING_DIR once and not again on every poll. See phone_import.py.
+PHONE_IMPORT_STATE = os.getenv("STAMP_PHONE_IMPORT_STATE", "storage/phone_import_seen.json")
 
 # ============ STAMP ENTRY DEFAULTS ============
 # Values pre-filled into the Fields form when a new stamp is started (History
