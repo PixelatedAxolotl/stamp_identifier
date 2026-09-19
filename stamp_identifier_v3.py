@@ -31,7 +31,6 @@ from PySide6.QtWidgets import (
     QFrame,
     QGroupBox,
     QSpinBox,
-    QRubberBand,
 )
 from PySide6.QtGui import QPixmap, QIcon, QPainter, QPen, QColor, QDesktopServices
 from PySide6.QtCore import Qt, QTimer, QSize, QRect, QRectF, QUrl, QEvent
@@ -1150,130 +1149,10 @@ class SeriesStampsDialog(QDialog):
 
 
 # ---------- Crop Dialog ----------
-class _CropCanvas(QWidget):
-    """Displays an image and lets the user drag a rubber-band crop selection."""
-
-    def __init__(self, pixmap: QPixmap, parent=None):
-        super().__init__(parent)
-        self._pixmap = pixmap
-        self._origin = None
-        self._selection: QRect | None = None
-        self._rubber_band = QRubberBand(QRubberBand.Rectangle, self)
-        self.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
-        self.setCursor(Qt.CrossCursor)
-
-    def paintEvent(self, _event):
-        p = QPainter(self)
-        scaled = self._pixmap.scaled(self.size(), Qt.KeepAspectRatio, Qt.SmoothTransformation)
-        x = (self.width()  - scaled.width())  // 2
-        y = (self.height() - scaled.height()) // 2
-        p.drawPixmap(x, y, scaled)
-
-    def mousePressEvent(self, event):
-        if event.button() == Qt.LeftButton:
-            self._origin = event.position().toPoint()
-            self._selection = None
-            self._rubber_band.setGeometry(QRect(self._origin, QSize()))
-            self._rubber_band.show()
-
-    def mouseMoveEvent(self, event):
-        if self._origin is not None:
-            self._rubber_band.setGeometry(
-                QRect(self._origin, event.position().toPoint()).normalized()
-            )
-
-    def mouseReleaseEvent(self, event):
-        if event.button() == Qt.LeftButton and self._origin is not None:
-            self._selection = QRect(self._origin, event.position().toPoint()).normalized()
-            self._origin = None
-
-    def _image_rect(self) -> tuple[int, int, int, int]:
-        """Return (ox, oy, scaled_w, scaled_h) — the drawn image rect on the canvas."""
-        scaled = self._pixmap.scaled(self.size(), Qt.KeepAspectRatio, Qt.SmoothTransformation)
-        ox = (self.width()  - scaled.width())  // 2
-        oy = (self.height() - scaled.height()) // 2
-        return ox, oy, scaled.width(), scaled.height()
-
-    def crop_rect_in_image(self) -> tuple[int, int, int, int] | None:
-        """Return (x1, y1, x2, y2) in original image pixels, or None if no selection."""
-        if self._selection is None or not self._selection.isValid():
-            return None
-        ox, oy, sw, sh = self._image_rect()
-        pw, ph = self._pixmap.width(), self._pixmap.height()
-        scale_x = pw / sw
-        scale_y = ph / sh
-        x1 = max(0,  int((self._selection.left()   - ox) * scale_x))
-        y1 = max(0,  int((self._selection.top()    - oy) * scale_y))
-        x2 = min(pw, int((self._selection.right()  - ox) * scale_x))
-        y2 = min(ph, int((self._selection.bottom() - oy) * scale_y))
-        if x2 <= x1 or y2 <= y1:
-            return None
-        return x1, y1, x2, y2
-
-
-class CropDialog(QDialog):
-    def __init__(self, image_path: str, parent=None):
-        super().__init__(parent)
-        self.setWindowTitle("Crop Image")
-        self.setMinimumSize(640, 520)
-        self._image_path = image_path
-
-        layout = QVBoxLayout(self)
-        layout.setContentsMargins(8, 8, 8, 8)
-        layout.setSpacing(6)
-
-        # Phone photos are stored in the camera's native landscape buffer with
-        # an EXIF Orientation tag saying how to turn them upright. QPixmap(path)
-        # ignores that tag, so a portrait photo would lie on its side here even
-        # though the History strip and the Preview panel — which both honour
-        # EXIF — show it upright. Load it the same way they do, and crop in that
-        # same upright space (see _apply).
-        from ui.panels.history import load_pixmap
-        self._canvas = _CropCanvas(load_pixmap(image_path))
-        layout.addWidget(self._canvas, 1)
-
-        hint = QLabel("Click and drag to select the crop area, then click Apply.")
-        hint.setAlignment(Qt.AlignCenter)
-        hint.setStyleSheet("color: gray; font-size: 11px;")
-        layout.addWidget(hint)
-
-        btn_row = QHBoxLayout()
-        btn_row.addStretch()
-        apply_btn = QPushButton("Apply Crop")
-        apply_btn.setFixedWidth(100)
-        apply_btn.clicked.connect(self._apply)
-        cancel_btn = QPushButton("Cancel")
-        cancel_btn.setFixedWidth(80)
-        cancel_btn.clicked.connect(self.reject)
-        btn_row.addWidget(apply_btn)
-        btn_row.addWidget(cancel_btn)
-        layout.addLayout(btn_row)
-
-    def _apply(self):
-        rect = self._canvas.crop_rect_in_image()
-        if rect is None:
-            QMessageBox.warning(self, "No Selection",
-                                "Drag a rectangle over the image to select a crop area first.")
-            return
-        x1, y1, x2, y2 = rect
-        try:
-            with Image.open(self._image_path) as img:
-                # The selection coordinates are in the upright (EXIF-applied)
-                # image the canvas displayed, so rotate the pixels to match
-                # before cropping — Image.open() alone hands back the raw
-                # sideways buffer, whose axes are swapped relative to the
-                # rectangle the user dragged.
-                #
-                # exif_transpose() also drops the now-satisfied Orientation tag.
-                # Baking the rotation in is what keeps the result upright: the
-                # save below writes no EXIF, so a file that kept the raw pixels
-                # would lose the tag telling every reader to rotate it and end
-                # up permanently on its side.
-                upright = ImageOps.exif_transpose(img)
-                upright.crop((x1, y1, x2, y2)).save(self._image_path)
-            self.accept()
-        except Exception as e:
-            QMessageBox.critical(self, "Crop Failed", str(e))
+# Moved to ui/crop_dialog.py, where it gained the auto-crop proposal, resizable
+# handles and the snapshot that makes a crop revertible. Re-exported here so
+# this module's own _open_crop_dialog keeps working off the one implementation.
+from ui.crop_dialog import CropDialog  # noqa: E402,F401
 
 
 # ---------- Main App ----------

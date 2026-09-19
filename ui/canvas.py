@@ -472,6 +472,80 @@ class Canvas(QWidget):
         ) == os.path.normpath(path):
             self.set_current_image_path(None)
 
+    def _on_similar_search(self, image_path: str):
+        """Match `image_path` against the collection and show the results.
+
+        Canvas owns this rather than the Preview panel because the pieces live
+        in three places: Preview has the image, Fields has the country and face
+        value that narrow the pool, and the candidate query needs a database
+        session.
+
+        Runs synchronously. A filtered pool is a few dozen images and returns in
+        well under a tenth of a second; the unfiltered fall-back is the slow
+        case, and it is bounded by the collection size rather than open-ended,
+        so a wait cursor covers it without the complexity of a worker thread.
+        """
+        from PySide6.QtWidgets import QApplication, QMessageBox
+        from PySide6.QtGui import QCursor
+
+        import visual_search
+        from db.service import ImageService
+        from db.session import SessionLocal
+        from ui.similar_dialog import SimilarResultsDialog
+
+        if not image_path or not os.path.exists(image_path):
+            QMessageBox.information(self, "Find Similar", "No image to search.")
+            return
+
+        filters = (self._fields_panel.get_search_filters()
+                   if self._fields_panel else {"country": "", "face_value": ""})
+
+        session = SessionLocal()
+        try:
+            candidates = ImageService.get_visual_candidates(
+                session,
+                country=filters.get("country") or None,
+                face_value=filters.get("face_value") or None,
+            )
+        except Exception as e:
+            logger.exception("visual search: candidate query failed")
+            QMessageBox.warning(self, "Find Similar", f"Could not read the collection:\n{e}")
+            return
+        finally:
+            session.close()
+
+        # A filter that matches nothing is a typo, not an empty collection —
+        # searching everything instead would silently ignore what was typed.
+        if not candidates:
+            QMessageBox.information(
+                self, "Find Similar",
+                "No stamps match those filters, so there is nothing to compare "
+                "against.\n\nCheck the country and face value fields, or clear "
+                "them to search the whole collection."
+            )
+            return
+
+        meta = {c["file_path"]: c for c in candidates}
+        QApplication.setOverrideCursor(QCursor(Qt.CursorShape.WaitCursor))
+        try:
+            matches = visual_search.search(image_path, list(meta), limit=25)
+        except Exception as e:
+            logger.exception("visual search: match failed")
+            QMessageBox.warning(self, "Find Similar", f"Search failed:\n{e}")
+            return
+        finally:
+            QApplication.restoreOverrideCursor()
+
+        logger.info(
+            f"visual search: {len(matches)} result(s) from {len(meta)} candidates "
+            f"(country={filters.get('country')!r} value={filters.get('face_value')!r})"
+        )
+
+        dlg = SimilarResultsDialog(image_path, matches, meta, len(meta), filters, self)
+        if self._fields_panel:
+            dlg.stamp_chosen.connect(self._fields_panel.load_stamp)
+        dlg.exec()
+
     # ------------------------------------------------------------------
     # Signal wiring
     # ------------------------------------------------------------------
@@ -494,7 +568,7 @@ class Canvas(QWidget):
 
         # Rotate → History thumbnail refresh
         if p and h:
-            p.image_rotated.connect(h.refresh_thumbnail)
+            p.image_changed.connect(h.refresh_thumbnail)
 
         # Image associated with a stamp → drop it from the incoming/History strip
         if f and h:
@@ -534,6 +608,10 @@ class Canvas(QWidget):
             g.stamp_load_requested.connect(f.load_stamp)
         if d and f:
             d.stamp_load_requested.connect(f.load_stamp)
+
+        # Preview "Find Similar" → match against the local collection
+        if p:
+            p.similar_search_requested.connect(self._on_similar_search)
 
         # Lens result suggestion → fill empty Scott # / country in Fields
         if r and f:

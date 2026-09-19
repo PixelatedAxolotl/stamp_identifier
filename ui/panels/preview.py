@@ -4,7 +4,8 @@
 #
 # Signals emitted:
 #   capture_complete(str path)       — new image captured; Canvas routes to History + Fields
-#   image_rotated(str, QPixmap)      — after rotate in image mode; Canvas routes to History
+#   image_changed(str, QPixmap)      — image rewritten in place (rotate, crop, revert);
+#                                      Canvas routes to History to refresh the thumbnail
 #   search_started()                 — Lens search kicked off; Canvas can track result polling
 #
 # Dependencies injected by Canvas after init:
@@ -21,14 +22,20 @@ from datetime import datetime
 from PySide6.QtWidgets import (
     QVBoxLayout, QHBoxLayout, QLabel, QPushButton, QSlider,
     QCheckBox, QGroupBox, QGridLayout, QWidget, QSizePolicy,
+    QDialog, QMessageBox,
 )
-from PySide6.QtCore import Qt, Signal, QTimer, QEvent, QRectF
+from PySide6.QtCore import Qt, Signal, QTimer, QEvent
 from PySide6.QtGui import QPixmap, QPainter, QPen, QColor
 from PIL import Image
 from PIL.ImageQt import ImageQt
 
-from config import INCOMING_DIR, CAMERA_INDEX, CAMERA_FPS
+import autocrop
+from config import (
+    CAMERA_INDEX, CAMERA_FPS, ORIGINALS_KEEP_DAYS, AUTOCROP_ON_ARRIVAL,
+)
+from image_storage import has_original, new_incoming_path, revert_to_original
 from logger import logger
+from ui.crop_dialog import CropDialog
 from ui.panel import Panel
 from ui.spinner import SpinnerWidget
 
@@ -55,8 +62,11 @@ _CAM_PROPS = [
 class PreviewPanel(Panel):
 
     capture_complete = Signal(str)
-    image_rotated    = Signal(str, QPixmap)
+    image_changed    = Signal(str, QPixmap)
     search_started   = Signal()
+    # Emitted with the shown image's path when "Find Similar" is clicked.
+    # Canvas performs the match; see PreviewPanel.find_similar.
+    similar_search_requested = Signal(str)
 
     def __init__(self, parent=None):
         super().__init__("Preview + Controls", parent, bg_texture="demo_widget.png", show_label=False)
@@ -154,7 +164,9 @@ class PreviewPanel(Panel):
         self._capture_only_btn.setVisible(True)
         self._camera_btn.setVisible(False)
         self._search_btn.setVisible(False)
+        self._similar_btn.setVisible(False)
         self._crop_btn.setVisible(False)
+        self._revert_btn.setVisible(False)
 
         # Start display timer immediately — _update_frame handles the spinner and
         # waits for frames; it does NOT need _on_camera_opened to have fired first.
@@ -192,7 +204,10 @@ class PreviewPanel(Panel):
         self._capture_only_btn.setVisible(False)
         self._camera_btn.setVisible(True)
         self._search_btn.setVisible(True)
+        self._similar_btn.setVisible(True)
         self._crop_btn.setVisible(True)
+        self._revert_btn.setVisible(True)
+        self._update_revert_btn()
         # Stop the display timer only — reader thread keeps running so the
         # MSMF pipeline stays warm. Switching back to live is then instant.
         self._frame_timer.stop()
@@ -209,6 +224,18 @@ class PreviewPanel(Panel):
 
     def capture_image_only(self):
         self._do_capture()
+
+    def find_similar(self):
+        """Ask Canvas to match the shown image against the local collection.
+
+        Deliberately a plain signal with no work attached: the panel knows the
+        image, but the country/face-value filters live on the Fields panel and
+        the candidate query needs a database session, so Canvas — which owns
+        both — does the search itself.
+        """
+        if not self.current_image_path:
+            return
+        self.similar_search_requested.emit(self.current_image_path)
 
     def search_image(self):
         if not self.current_image_path or not self._browser_worker:
@@ -234,7 +261,10 @@ class PreviewPanel(Panel):
         ts   = datetime.now().strftime("%Y%m%d_%H%M%S")
         # New captures are un-associated; they live in INCOMING_DIR until they
         # are attached to a stamp (storage.associate_image moves them to IMAGE_DIR).
-        path = os.path.join(INCOMING_DIR, f"stamp_{ts}.jpg")
+        # The name is only second-resolution, so this goes through
+        # new_incoming_path() to keep two captures in the same second from
+        # landing on each other — and to clear any snapshot left under the name.
+        path = new_incoming_path(f"stamp_{ts}.jpg")
         try:
             # Crop the full-resolution frame with the same window the preview is
             # showing — saved pixels are what you framed, at camera resolution.
@@ -245,6 +275,11 @@ class PreviewPanel(Panel):
             cv2.imwrite(path, to_save)
         except Exception:
             cv2.imwrite(path, self._current_frame)
+        # Crop before the image is shown, so the preview and the History
+        # thumbnail both come from the cropped file rather than flashing the
+        # full frame first. A decline leaves the capture exactly as it was.
+        if AUTOCROP_ON_ARRIVAL:
+            autocrop.apply_to(path)
         self.current_image_path = path
         self.set_image_mode()
         img = cv2.imread(path)
@@ -266,25 +301,54 @@ class PreviewPanel(Panel):
             if self.current_image_path:
                 cv2.imwrite(self.current_image_path, self._current_frame)
                 pix = QPixmap(self.current_image_path)
-                self.image_rotated.emit(self.current_image_path, pix)
+                self.image_changed.emit(self.current_image_path, pix)
 
     def _open_crop_dialog(self):
         if not self.current_image_path or not os.path.exists(self.current_image_path):
             return
-        # CropDialog is defined in stamp_identifier_v3; import lazily to avoid
-        # circular imports until it is migrated to its own module.
-        try:
-            from stamp_identifier_v3 import CropDialog
-            from PySide6.QtWidgets import QDialog
-            dlg = CropDialog(self.current_image_path, self)
-            if dlg.exec() == QDialog.DialogCode.Accepted:
-                img = cv2.imread(self.current_image_path)
-                if img is not None:
-                    self._current_frame = img
-                    self._zoom_center = [0.5, 0.5]   # new framing, old pan is meaningless
-                    self._display_frame(img)
-        except Exception as e:
-            logger.warning(f"CropDialog unavailable: {e}")
+        dlg = CropDialog(self.current_image_path, self)
+        if dlg.exec() == QDialog.DialogCode.Accepted:
+            self._reload_current_image()
+
+    def _revert_crop(self):
+        """Undo every crop applied to the shown image.
+
+        The button is only enabled while a snapshot exists, so reaching here
+        with nothing to restore means the snapshot was pruned or removed
+        underneath us — report it rather than failing silently.
+        """
+        if not self.current_image_path:
+            return
+        if not revert_to_original(self.current_image_path):
+            message = "The original of this image is no longer available."
+            if ORIGINALS_KEEP_DAYS:
+                message += (f"\n\nOriginals are kept for {ORIGINALS_KEEP_DAYS} days "
+                            f"after a crop.")
+            QMessageBox.information(self, "Nothing to Revert", message)
+            self._update_revert_btn()
+            return
+        self._reload_current_image()
+
+    def _reload_current_image(self):
+        """Re-read the shown image after it has been rewritten on disk."""
+        img = cv2.imread(self.current_image_path)
+        if img is None:
+            return
+        self._current_frame = img
+        self._zoom_center = [0.5, 0.5]   # new framing, old pan is meaningless
+        self._display_frame(img)
+        self._update_revert_btn()
+        self.image_changed.emit(self.current_image_path, QPixmap(self.current_image_path))
+
+    def _update_revert_btn(self):
+        """Enable Revert only when the shown image actually has a snapshot."""
+        revertible = bool(self.current_image_path) and has_original(self.current_image_path)
+        self._revert_btn.setEnabled(revertible)
+        self._revert_btn.setToolTip(
+            "Undo the crop and restore the original image"
+            if revertible else
+            "No original stored — this image has not been cropped"
+        )
 
     # ------------------------------------------------------------------
     # Internal — camera
@@ -741,23 +805,39 @@ class PreviewPanel(Panel):
         self._capture_only_btn = QPushButton("Capture Only")
         self._camera_btn       = QPushButton("Camera")
         self._search_btn       = QPushButton("Search")
+        self._similar_btn      = QPushButton("Find Similar")
         self._rotate_btn       = QPushButton("↻")
         self._crop_btn         = QPushButton("Crop")
+        self._revert_btn       = QPushButton("Revert")
 
         self._rotate_btn.setFixedWidth(32)
         self._rotate_btn.setToolTip("Rotate 90° clockwise")
         self._crop_btn.setFixedWidth(60)
+        self._revert_btn.setFixedWidth(60)
+        self._revert_btn.setEnabled(False)
+        # "Search" is Google Lens and needs the network; this one is the local
+        # matcher. The tooltip is where that distinction is actually made, since
+        # the two buttons sit side by side.
+        self._search_btn.setToolTip("Search this image with Google Lens (online)")
+        self._similar_btn.setToolTip(
+            "Match this image against stamps already in your collection "
+            "(offline).\nNarrowed by the country and face value fields when "
+            "they are filled in."
+        )
 
         self._capture_btn.clicked.connect(self.capture_image)
         self._capture_only_btn.clicked.connect(self.capture_image_only)
         self._camera_btn.clicked.connect(self.show_camera)
         self._search_btn.clicked.connect(self.search_image)
+        self._similar_btn.clicked.connect(self.find_similar)
         self._rotate_btn.clicked.connect(self._rotate_image)
         self._crop_btn.clicked.connect(self._open_crop_dialog)
+        self._revert_btn.clicked.connect(self._revert_crop)
 
         for btn in (
             self._capture_btn, self._capture_only_btn, self._camera_btn,
-            self._search_btn, self._rotate_btn, self._crop_btn,
+            self._search_btn, self._similar_btn, self._rotate_btn, self._crop_btn,
+            self._revert_btn,
         ):
             btn_row.addWidget(btn)
 
