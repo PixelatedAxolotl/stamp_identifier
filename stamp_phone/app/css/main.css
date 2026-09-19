@@ -1,0 +1,1510 @@
+/* ============================================================
+   Design tokens — all values live here, nowhere else
+   ============================================================ */
+:root {
+  /* ==========================================================
+     ██  THE KNOB  ██
+     Every colour below is derived from these three numbers.
+     Change --brand-h and the entire app — surfaces, borders,
+     glows, badges, the status bar — rotates with it. Nothing
+     else in this file, or any other file, needs touching.
+
+       260  spectral violet (default)    170  ectoplasm green
+       350  dried blood                  205  drowned blue
+       295  witch orchid                  25  guttering candle
+     ========================================================== */
+  /* Tells the browser to render its own chrome — scrollbars, native select
+     popups, autofill, the on-screen keyboard — in dark. Without it those
+     arrive as blinding white rectangles no stylesheet can reach. */
+  color-scheme: dark;
+
+  --brand-h: 260;   /* master hue, 0-360 */
+  --brand-s: 70%;   /* accent saturation — how fiercely the glows burn */
+  --veil-s:  30%;   /* how strongly the dark surfaces are stained by the hue */
+
+  /* Secondary accents are pinned at a fixed ANGLE from the brand hue rather
+     than to absolute hues, so rotating the knob carries them along and keeps
+     the relationship intact. At the default 260 these land on the desktop
+     skin's ectoplasm cyan and candle ember. Hues wrap past 360 on their own. */
+  --accent-h: calc(var(--brand-h) - 93);   /* ectoplasm  — press / confirm */
+  --ember-h:  calc(var(--brand-h) + 130);  /* candle     — warnings / unsynced */
+
+  /* --- Surfaces: the void, and the things lifted out of it --- */
+  --c-surface:            hsl(var(--brand-h) var(--veil-s)  5%);  /* the void itself */
+  --c-surface-container:  hsl(var(--brand-h) var(--veil-s) 11%);  /* cards, nav, sheets */
+  --c-surface-variant:    hsl(var(--brand-h) var(--veil-s) 16%);  /* subtle raised fills */
+  --c-input-bg:           hsl(var(--brand-h) calc(var(--veil-s) + 8%) 8%); /* inset wells */
+
+  /* --- MD3 colour roles --- */
+  --c-primary:               hsl(var(--brand-h) var(--brand-s) 72%);
+  --c-on-primary:            hsl(var(--brand-h) 45%  9%);
+  --c-primary-container:     hsl(var(--brand-h) 40% 27%);
+  --c-on-primary-container:  hsl(var(--brand-h) 90% 87%);
+  --c-secondary:             hsl(var(--brand-h) 24% 62%);
+  --c-on-secondary:          hsl(var(--brand-h) 40%  9%);
+  --c-secondary-container:   hsl(var(--brand-h) 26% 22%);
+  --c-on-secondary-container:hsl(var(--brand-h) 45% 85%);
+  --c-on-surface:            hsl(var(--brand-h) 38% 88%);
+  --c-on-surface-variant:    hsl(var(--brand-h) 16% 62%);
+  --c-outline:               hsl(var(--brand-h) 28% 32%);
+  --c-outline-variant:       hsl(var(--brand-h) 30% 20%);
+  /* Error holds a fixed red: danger must read as danger at any brand hue. */
+  --c-error:                 hsl(  4 78% 70%);
+  --c-on-error:              hsl(  4 60% 10%);
+
+  /* --- Accents --- */
+  --c-accent: hsl(var(--accent-h) 63% 66%);
+  --c-ember:  hsl(var(--ember-h)  74% 63%);
+
+  /* --- Top app bar: a lit band with a glowing underline, mirroring the
+         desktop skin's #panelTitleBar --- */
+  --c-top-bar-top: hsl(var(--brand-h) var(--veil-s) 17%);
+  --c-top-bar-bot: hsl(var(--brand-h) var(--veil-s) 11%);
+  --c-top-bar-fg:  hsl(var(--brand-h) 90% 87%);
+
+  /* --- Semantic overlays / derived colours --- */
+  --c-scrim:                 hsl(var(--brand-h) 45% 2% / 0.78);
+  --c-shadow-key:            hsl(var(--brand-h) 50% 2% / 0.66);
+  --c-ripple-on-dark:        hsl(var(--brand-h) 90% 88% / 0.14);
+  --c-ripple-on-dark-press:  hsl(var(--brand-h) 90% 88% / 0.24);
+  --c-ripple-on-surface:     hsl(var(--brand-h) 90% 88% / 0.09);
+  --c-ripple-primary:        hsl(var(--brand-h) var(--brand-s) 70% / 0.16);
+  --c-skeleton-base:         hsl(var(--brand-h) var(--veil-s) 13%);
+  --c-skeleton-highlight:    hsl(var(--brand-h) var(--veil-s) 20%);
+
+  /* --- Toast --- */
+  --c-toast-bg:              hsl(var(--brand-h) var(--veil-s) 16%);
+  --c-toast-fg:              hsl(var(--brand-h) 38% 90%);
+
+  /* --- Condition badges — dark tinted chips. Each condition keeps its own
+         hue so they stay scannable in a grid, but the four knobs below tune
+         all nine at once. MNH rides the brand hue. --- */
+  --cond-bg-s: 42%;  --cond-bg-l: 17%;
+  --cond-fg-s: 68%;  --cond-fg-l: 72%;
+
+  --c-cond-mnh-bg:    hsl(var(--brand-h) var(--cond-bg-s) var(--cond-bg-l));
+  --c-cond-mnh-fg:    hsl(var(--brand-h) var(--cond-fg-s) var(--cond-fg-l));
+  --c-cond-mh-bg:     hsl(140 var(--cond-bg-s) var(--cond-bg-l));
+  --c-cond-mh-fg:     hsl(140 var(--cond-fg-s) var(--cond-fg-l));
+  --c-cond-mint-bg:   hsl(172 var(--cond-bg-s) var(--cond-bg-l));
+  --c-cond-mint-fg:   hsl(172 var(--cond-fg-s) var(--cond-fg-l));
+  --c-cond-ngnc-bg:   hsl( 32 var(--cond-bg-s) var(--cond-bg-l));
+  --c-cond-ngnc-fg:   hsl( 32 var(--cond-fg-s) var(--cond-fg-l));
+  --c-cond-fu-bg:     hsl(210 var(--cond-bg-s) var(--cond-bg-l));
+  --c-cond-fu-fg:     hsl(210 var(--cond-fg-s) var(--cond-fg-l));
+  /* Used is deliberately desaturated so it reads as dull brown, not orange. */
+  --c-cond-used-bg:   hsl( 20 20% var(--cond-bg-l));
+  --c-cond-used-fg:   hsl( 20 30% var(--cond-fg-l));
+  --c-cond-cto-bg:    hsl(  0 var(--cond-bg-s) var(--cond-bg-l));
+  --c-cond-cto-fg:    hsl(  0 var(--cond-fg-s) var(--cond-fg-l));
+  --c-cond-faulty-bg: hsl(330 var(--cond-bg-s) var(--cond-bg-l));
+  --c-cond-faulty-fg: hsl(330 var(--cond-fg-s) var(--cond-fg-l));
+  --c-cond-other-bg:  hsl(var(--brand-h) 12% var(--cond-bg-l));
+  --c-cond-other-fg:  hsl(var(--brand-h) 14% var(--cond-fg-l));
+  --c-cond-none-bg:   var(--c-surface-variant);
+  --c-cond-none-fg:   var(--c-on-surface-variant);
+
+  /* --- Unsynced overlay. Sits over a whole card, so it is kept dim and
+         translucent — the stamp beneath should still be readable through it,
+         and a full-bleed saturated block would shout down the whole grid. --- */
+  --c-unsynced-bg: hsl(var(--ember-h) 62% 18% / 0.72);
+  --c-unsynced-fg: hsl(var(--ember-h) 85% 78%);
+
+  /* --- Depth. A black drop shadow is invisible against a black ground, so
+         lift is carried by a hairline rim plus a soft coloured bloom. --- */
+  --elevation-1:
+    0 1px 2px var(--c-shadow-key),
+    0 0 0 1px hsl(var(--brand-h) var(--veil-s) 18%),
+    0 3px 14px -6px hsl(var(--brand-h) var(--brand-s) 60% / 0.35);
+  --elevation-2:
+    0 3px 8px var(--c-shadow-key),
+    0 0 0 1px hsl(var(--brand-h) var(--veil-s) 23%),
+    0 6px 22px -8px hsl(var(--brand-h) var(--brand-s) 62% / 0.50);
+
+  /* Focus flares violet, press flares ectoplasm — same language as the
+     desktop QSS skin, where :focus takes the violet rim and :pressed the cyan. */
+  --focus-ring:
+    0 0 0 3px hsl(var(--brand-h) var(--brand-s) 65% / 0.20),
+    0 0 14px -2px hsl(var(--brand-h) var(--brand-s) 68% / 0.45);
+  --press-ring:
+    0 0 0 1px var(--c-accent),
+    0 0 16px -3px hsl(var(--accent-h) 63% 60% / 0.55);
+
+  /* The .edit-select caret is a data: URI, and data URIs cannot read CSS
+     variables — its colour has to be spelled out. A hue-neutral lavender-grey
+     that suits any brand hue; the only colour literal left in this file. */
+  --c-select-caret: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24'%3E%3Cpath fill='%23a99cc4' d='M7 10l5 5 5-5z'/%3E%3C/svg%3E");
+
+  /* --- Shape (border-radius) --- */
+  --r-xs:   4px;
+  --r-sm:   8px;
+  --r-md:  12px;
+  --r-lg:  16px;
+  --r-xl:  28px;
+  --r-full:50px;
+
+  /* --- Typography --- */
+  --font:              'Roboto', system-ui, -apple-system, sans-serif;
+  --fs-2xs:            10px;
+  --fs-xs:             11px;
+  --fs-sm:             12px;
+  --fs-base:           14px;
+  --fs-md:             16px;
+  --fs-lg:             18px;
+  --fs-xl:             22px;
+  --fw-normal:         400;
+  --fw-medium:         500;
+  --fw-semibold:       600;
+
+  /* --- Layout --- */
+  --top-bar-height:    64px;
+  --bottom-nav-height: 80px;
+  /* What the nav actually occupies. The home-indicator inset has to be ADDED
+     to the nav's height, not absorbed into it: with box-sizing: border-box a
+     bare `height: 80px` + `padding-bottom: env(...)` leaves only 46px of usable
+     box on a phone with a home indicator, which crushes the icons and labels. */
+  --bottom-nav-total:  calc(var(--bottom-nav-height) + env(safe-area-inset-bottom, 0px));
+}
+
+/* ============================================================
+   Reset / base
+   ============================================================ */
+*, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+html { height: 100%; background: var(--c-surface); }
+
+body {
+  height: 100%;
+  font-family: var(--font);
+  font-size: var(--fs-base);
+  color: var(--c-on-surface);
+  -webkit-tap-highlight-color: transparent;
+  overscroll-behavior: none;
+  /* Vignette — a faintly lit centre falling away into the void at the edges,
+     mirroring the radial gradient the desktop skin paints on #canvas. Fixed
+     so it stays put behind scrolling content instead of travelling with it. */
+  background:
+    radial-gradient(125% 85% at 50% 38%,
+      hsl(var(--brand-h) var(--veil-s) 13%) 0%,
+      hsl(var(--brand-h) var(--veil-s)  8%) 46%,
+      var(--c-surface) 100%) fixed;
+}
+
+a { color: inherit; text-decoration: none; }
+button { font-family: inherit; cursor: pointer; border: none; background: none; }
+input, select, textarea { font-family: inherit; }
+
+/* ============================================================
+   Top app bar
+   ============================================================ */
+.top-app-bar {
+  position: fixed;
+  top: 0; left: 0; right: 0;
+  height: var(--top-bar-height);
+  /* Lit at the top, shadowed at the bottom, closed with a glowing rule —
+     the same construction as #panelTitleBar in the desktop skin. */
+  background: linear-gradient(180deg, var(--c-top-bar-top), var(--c-top-bar-bot));
+  color: var(--c-top-bar-fg);
+  border-bottom: 1px solid var(--c-primary);
+  display: flex;
+  align-items: center;
+  padding: 0 4px;
+  z-index: 100;
+  box-shadow:
+    0 2px 6px var(--c-shadow-key),
+    0 3px 20px -8px hsl(var(--brand-h) var(--brand-s) 62% / 0.55);
+}
+
+.top-bar-title {
+  flex: 1;
+  font-size: var(--fs-xl);
+  font-weight: var(--fw-normal);
+  letter-spacing: 1px;
+  padding: 0 8px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.top-bar-actions {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  margin-right: 4px;
+}
+
+/* ============================================================
+   Icon buttons
+   ============================================================ */
+.icon-btn {
+  width: 48px;
+  height: 48px;
+  border-radius: 50%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--c-top-bar-fg);
+  transition: background 0.15s;
+  flex-shrink: 0;
+}
+
+.icon-btn:hover, .icon-btn:focus-visible { background: var(--c-ripple-on-dark); }
+.icon-btn:active                          { background: var(--c-ripple-on-dark-press); }
+.icon-btn svg { width: 24px; height: 24px; }
+
+.icon-btn.on-surface {
+  color: var(--c-on-surface-variant);
+}
+.icon-btn.on-surface:hover,
+.icon-btn.on-surface:focus-visible { background: var(--c-ripple-on-surface); }
+
+.hidden { display: none !important; }
+
+/* ============================================================
+   Main content area
+   ============================================================ */
+#main-content {
+  position: fixed;
+  top: var(--top-bar-height);
+  bottom: var(--bottom-nav-total);
+  left: 0; right: 0;
+  overflow: hidden;
+}
+
+.view {
+  position: absolute;
+  inset: 0;
+  overflow-y: auto;
+  -webkit-overflow-scrolling: touch;
+}
+
+/* ============================================================
+   Bottom navigation
+   ============================================================ */
+.bottom-nav {
+  position: fixed;
+  bottom: 0; left: 0; right: 0;
+  height: var(--bottom-nav-total);
+  background: var(--c-surface-container);
+  border-top: 1px solid var(--c-outline-variant);
+  display: flex;
+  padding-bottom: env(safe-area-inset-bottom, 0px);
+  z-index: 100;
+}
+
+/* Mobile browsers park `position: fixed; bottom: 0` at the bottom of the
+   LAYOUT viewport. When the address bar retracts the visual viewport grows
+   past it, and the strip revealed underneath is painted by the canvas — which
+   is the near-black page colour, against a distinctly lighter nav. That reads
+   as an empty black bar under the nav. (It went unnoticed while the theme was
+   light: page and nav were both near-white, so the seam was invisible.) This
+   carries the nav's own colour down into whatever gets revealed. */
+.bottom-nav::after {
+  content: "";
+  position: absolute;
+  top: 100%;
+  left: 0; right: 0;
+  height: 120px;
+  background: var(--c-surface-container);
+}
+
+/* ============================================================
+   Recent activity list (Sync page)
+   ============================================================ */
+.activity-section { margin-top: 24px; }
+
+.activity-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 8px;
+}
+
+.activity-list {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  background: var(--c-outline-variant);
+  border-radius: var(--r-md);
+  overflow: hidden;
+}
+
+.activity-item {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 10px 12px;
+  background: var(--c-surface-container);
+  border-left: 3px solid transparent;
+}
+
+.activity-msg  { color: var(--c-on-surface); }
+.activity-time {
+  font-size: var(--fs-2xs);
+  color: var(--c-on-surface-variant);
+  white-space: nowrap;
+}
+
+.activity-error { border-left-color: var(--c-error); }
+.activity-warn  { border-left-color: var(--c-ember); }
+.activity-info  { border-left-color: var(--c-outline-variant); }
+
+/* ============================================================
+   Capture button — middle slot of the bottom nav
+   ============================================================ */
+/* Mirrors .nav-item's grid so the camera pill lands on the same baseline as
+   the two nav indicators. This button has no label, so without a stand-in for
+   one it centres 32px of pill in the full height while its neighbours centre
+   pill+gap+label — leaving it sitting 10px lower than they do. The ::after
+   reproduces a label's box (same font metrics, one non-breaking space) rather
+   than hardcoding that 10px, so it tracks any change to the label styling. */
+.nav-capture {
+  flex: 1;
+  display: grid;
+  grid-template-columns: auto;
+  justify-items: center;
+  align-content: center;
+  gap: 4px;
+  padding: 12px 0 8px;
+  position: relative;
+  color: var(--c-on-primary-container);
+}
+
+.nav-capture::after {
+  content: "\00a0";
+  grid-area: 2 / 1;
+  font-size: var(--fs-sm);
+  font-weight: var(--fw-medium);
+  letter-spacing: 0.5px;
+}
+
+.nav-capture-inner {
+  grid-area: 1 / 1;
+  width: 64px;
+  height: 32px;
+  border-radius: var(--r-full);
+  background: var(--c-primary-container);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  box-shadow: var(--elevation-1);
+  transition: transform 0.12s, opacity 0.12s;
+}
+
+.nav-capture:active .nav-capture-inner   { transform: scale(0.92); box-shadow: var(--press-ring); }
+.nav-capture:disabled                    { pointer-events: none; }
+.nav-capture:disabled .nav-capture-inner { opacity: 0.5; }
+.nav-capture svg                         { width: 22px; height: 22px; }
+
+/* Count of photos taken while the laptop was unreachable. Positioned against
+   the 64px pill rather than the flex slot, which is wider. */
+.fab-badge {
+  position: absolute;
+  top: 6px;
+  right: calc(50% - 38px);
+  min-width: 18px;
+  height: 18px;
+  padding: 0 5px;
+  border-radius: var(--r-full);
+  /* Solid ember rather than the translucent overlay tint — this is a small
+     count pill on a dark nav and has to stay legible at 18px. */
+  background: var(--c-ember);
+  color: hsl(var(--ember-h) 60% 10%);
+  box-shadow: 0 0 10px -2px hsl(var(--ember-h) 74% 55% / 0.70);
+  font-size: var(--fs-2xs);
+  font-weight: var(--fw-semibold);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+/* Two rows — [icon] over [label] — with the pill and the icon sharing the
+   first cell so they are drawn concentrically. The pill used to be absolutely
+   positioned at a fixed offset from the top of the item, which only lines up
+   with the icon by coincidence: the icon's position is decided by centring
+   icon+gap+label in whatever height is left, so any change to the label size,
+   the padding or the nav height slides the two apart. Sharing a grid cell
+   makes them centre on each other by construction. */
+.nav-item {
+  flex: 1;
+  display: grid;
+  grid-template-columns: auto;
+  justify-items: center;
+  align-content: center;
+  gap: 4px;
+  padding: 12px 0 8px;
+  color: var(--c-on-surface-variant);
+  position: relative;
+  transition: color 0.15s;
+}
+
+.nav-indicator {
+  grid-area: 1 / 1;
+  align-self: center;
+  width: 64px;
+  height: 32px;
+  border-radius: var(--r-full);
+  background: transparent;
+  transition: background 0.2s;
+}
+
+.nav-item.active              { color: var(--c-primary); }
+.nav-item.active .nav-indicator {
+  background: var(--c-primary-container);
+  box-shadow: 0 0 14px -3px hsl(var(--brand-h) var(--brand-s) 62% / 0.60);
+}
+
+/* Same cell as the indicator, so the pill is centred on the glyph. */
+.nav-icon  { grid-area: 1 / 1; align-self: center; width: 24px; height: 24px; position: relative; z-index: 1; }
+.nav-label { grid-area: 2 / 1; font-size: var(--fs-sm); font-weight: var(--fw-medium); letter-spacing: 0.5px; }
+
+/* ============================================================
+   Gallery toolbar
+   ============================================================ */
+.gallery-toolbar {
+  position: sticky;
+  top: 0;
+  background: var(--c-surface-container);
+  z-index: 10;
+  padding: 12px 16px 8px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  border-bottom: 1px solid var(--c-outline-variant);
+}
+
+.search-bar {
+  display: flex;
+  align-items: center;
+  background: var(--c-input-bg);
+  border: 1px solid var(--c-outline-variant);
+  border-radius: var(--r-full);
+  padding: 0 16px;
+  gap: 8px;
+  height: 48px;
+  transition: border-color 0.15s, box-shadow 0.15s;
+}
+.search-bar:focus-within {
+  border-color: var(--c-primary);
+  box-shadow: var(--focus-ring);
+}
+
+.search-bar svg    { width: 20px; height: 20px; color: var(--c-on-surface-variant); flex-shrink: 0; }
+.search-bar input  {
+  flex: 1;
+  border: none;
+  background: none;
+  outline: none;
+  font-size: var(--fs-md);
+  color: var(--c-on-surface);
+}
+.search-bar input::placeholder { color: var(--c-on-surface-variant); }
+
+.filter-row { display: flex; align-items: center; gap: 8px; }
+
+.filter-chips {
+  display: flex;
+  gap: 8px;
+  flex: 1;
+  overflow-x: auto;
+  scrollbar-width: none;
+}
+.filter-chips::-webkit-scrollbar { display: none; }
+
+/* ============================================================
+   Chips
+   ============================================================ */
+.chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  height: 32px;
+  padding: 0 12px;
+  border-radius: var(--r-full);
+  border: 1px solid var(--c-outline);
+  font-size: var(--fs-base);
+  font-weight: var(--fw-medium);
+  white-space: nowrap;
+  cursor: pointer;
+  color: var(--c-on-surface-variant);
+  background: var(--c-surface-container);
+  transition: background 0.15s, color 0.15s, border-color 0.15s, box-shadow 0.15s;
+  flex-shrink: 0;
+}
+.chip:active { background: var(--c-surface-variant); box-shadow: var(--press-ring); }
+.chip.active {
+  background: var(--c-secondary-container);
+  color: var(--c-on-secondary-container);
+  border-color: hsl(var(--brand-h) var(--brand-s) 62% / 0.45);
+  box-shadow: 0 0 12px -4px hsl(var(--brand-h) var(--brand-s) 65% / 0.55);
+}
+.chip svg { width: 18px; height: 18px; }
+
+.filter-btn {
+  width: 40px;
+  height: 40px;
+  border-radius: var(--r-md);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--c-on-surface-variant);
+  border: 1px solid var(--c-outline-variant);
+  flex-shrink: 0;
+  transition: background 0.15s;
+}
+.filter-btn:active { background: var(--c-surface-variant); box-shadow: var(--press-ring); }
+.filter-btn.has-filters {
+  background: var(--c-secondary-container);
+  color: var(--c-on-secondary-container);
+  border-color: hsl(var(--brand-h) var(--brand-s) 62% / 0.45);
+  box-shadow: 0 0 12px -4px hsl(var(--brand-h) var(--brand-s) 65% / 0.55);
+}
+.filter-btn svg { width: 20px; height: 20px; }
+
+/* ============================================================
+   Gallery grid + cards
+   ============================================================ */
+.gallery-grid {
+  display: grid;
+  grid-template-columns: repeat(2, 1fr);
+  gap: 8px;
+  padding: 12px;
+}
+
+@media (min-width: 480px) {
+  .gallery-grid { grid-template-columns: repeat(3, 1fr); }
+}
+
+.stamp-card {
+  background: var(--c-surface-container);
+  border-radius: var(--r-md);
+  overflow: hidden;
+  box-shadow: var(--elevation-1);
+  cursor: pointer;
+  display: flex;
+  flex-direction: column;
+  transition: box-shadow 0.15s;
+  position: relative;
+}
+
+.unsynced-overlay {
+  position: absolute;
+  inset: 0;
+  background: var(--c-unsynced-bg);
+  color: var(--c-unsynced-fg);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: var(--fs-xs);
+  font-weight: var(--fw-semibold);
+  letter-spacing: 0.5px;
+  text-align: center;
+  padding: 8px;
+  pointer-events: none;
+  z-index: 5;
+}
+.stamp-card:active { box-shadow: var(--elevation-2); }
+
+/* contain, not cover. The subject here IS the stamp, so cropping it to fill
+   the square lops off perforations, margins and often part of the design.
+   The collection runs roughly 40% portrait / 60% landscape and from 0.6 to
+   2.4 in aspect, so no single non-square box suits both orientations — a
+   square with the spare space letterboxed shows every stamp whole and keeps
+   the grid rhythm even. The padding keeps perforated edges off the card rim. */
+.stamp-card-image {
+  width: 100%;
+  aspect-ratio: 1 / 1;
+  object-fit: contain;
+  padding: 6px;
+  background: var(--c-surface-variant);
+  display: block;
+}
+
+.stamp-card-placeholder {
+  width: 100%;
+  aspect-ratio: 1 / 1;
+  background: var(--c-surface-variant);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--c-on-surface-variant);
+}
+.stamp-card-placeholder svg { width: 40px; height: 40px; opacity: 0.4; }
+
+.stamp-card-body {
+  padding: 8px 10px 10px;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.stamp-card-title {
+  font-size: var(--fs-sm);
+  font-weight: var(--fw-medium);
+  color: var(--c-on-surface);
+  line-height: 1.3;
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+
+.stamp-card-meta {
+  font-size: var(--fs-2xs);
+  color: var(--c-on-surface-variant);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.stamp-card-badges {
+  display: flex;
+  gap: 4px;
+  margin-top: 4px;
+  flex-wrap: wrap;
+}
+
+.badge {
+  font-size: var(--fs-2xs);
+  font-weight: var(--fw-semibold);
+  padding: 2px 6px;
+  border-radius: var(--r-full);
+  text-transform: uppercase;
+  letter-spacing: 0.3px;
+  /* Hairline rim — dark tinted chips need an edge or they dissolve into
+     whatever surface they are sitting on. */
+  box-shadow: inset 0 0 0 1px hsl(var(--brand-h) 20% 70% / 0.12);
+}
+.cond-mnh    { background: var(--c-cond-mnh-bg);    color: var(--c-cond-mnh-fg); }
+.cond-mh     { background: var(--c-cond-mh-bg);     color: var(--c-cond-mh-fg); }
+.cond-mint   { background: var(--c-cond-mint-bg);   color: var(--c-cond-mint-fg); }
+.cond-ngnc   { background: var(--c-cond-ngnc-bg);   color: var(--c-cond-ngnc-fg); }
+.cond-fu     { background: var(--c-cond-fu-bg);     color: var(--c-cond-fu-fg); }
+.cond-used   { background: var(--c-cond-used-bg);   color: var(--c-cond-used-fg); }
+.cond-cto    { background: var(--c-cond-cto-bg);    color: var(--c-cond-cto-fg); }
+.cond-faulty { background: var(--c-cond-faulty-bg); color: var(--c-cond-faulty-fg); }
+.cond-other  { background: var(--c-cond-other-bg);  color: var(--c-cond-other-fg); }
+.cond-none   { background: var(--c-cond-none-bg);   color: var(--c-cond-none-fg); }
+
+/* ============================================================
+   Gallery count + load more
+   ============================================================ */
+.gallery-count {
+  padding: 8px 16px;
+  font-size: var(--fs-sm);
+  color: var(--c-on-surface-variant);
+}
+
+.gallery-footer {
+  padding: 16px;
+  display: flex;
+  justify-content: center;
+}
+
+/* ============================================================
+   Buttons
+   ============================================================ */
+.btn-tonal {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  height: 40px;
+  padding: 0 24px;
+  border-radius: var(--r-full);
+  background: var(--c-secondary-container);
+  color: var(--c-on-secondary-container);
+  font-size: var(--fs-base);
+  font-weight: var(--fw-medium);
+  cursor: pointer;
+  border: none;
+  transition: filter 0.15s, box-shadow 0.15s;
+}
+.btn-tonal:active  { filter: brightness(1.15); box-shadow: var(--press-ring); }
+.btn-tonal:disabled { opacity: 0.38; pointer-events: none; }
+
+.btn-filled {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  height: 40px;
+  padding: 0 24px;
+  border-radius: var(--r-full);
+  background: var(--c-primary);
+  color: var(--c-on-primary);
+  font-size: var(--fs-base);
+  font-weight: var(--fw-medium);
+  cursor: pointer;
+  border: none;
+  /* Resting bloom so the primary action reads as lit rather than flat. */
+  box-shadow: 0 0 16px -5px hsl(var(--brand-h) var(--brand-s) 68% / 0.75);
+  transition: filter 0.15s, box-shadow 0.15s;
+}
+.btn-filled:active { filter: brightness(1.12); box-shadow: var(--press-ring); }
+
+.btn-text {
+  display: inline-flex;
+  align-items: center;
+  height: 40px;
+  padding: 0 12px;
+  border-radius: var(--r-full);
+  color: var(--c-primary);
+  font-size: var(--fs-base);
+  font-weight: var(--fw-medium);
+  cursor: pointer;
+  background: none;
+  border: none;
+  transition: background 0.15s;
+}
+.btn-text:active { background: var(--c-ripple-primary); }
+
+/* ============================================================
+   Skeletons
+   ============================================================ */
+@keyframes shimmer {
+  0%   { background-position: -400px 0; }
+  100% { background-position:  400px 0; }
+}
+
+.skeleton {
+  background: linear-gradient(
+    90deg,
+    var(--c-skeleton-base) 25%,
+    var(--c-skeleton-highlight) 50%,
+    var(--c-skeleton-base) 75%
+  );
+  background-size: 800px 100%;
+  animation: shimmer 1.4s infinite;
+  border-radius: var(--r-xs);
+}
+
+.skeleton-card        { border-radius: var(--r-md); overflow: hidden; box-shadow: var(--elevation-1); }
+.skeleton-image       { aspect-ratio: 1 / 1; }
+.skeleton-body        { padding: 8px 10px 10px; display: flex; flex-direction: column; gap: 6px; }
+.skeleton-line        { height: 12px; border-radius: 6px; }
+
+/* ============================================================
+   Empty state
+   ============================================================ */
+.empty-state {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  padding: 64px 32px;
+  text-align: center;
+  gap: 12px;
+  color: var(--c-on-surface-variant);
+}
+.empty-state svg { width: 64px; height: 64px; opacity: 0.4; }
+.empty-state h3  { font-size: var(--fs-md); font-weight: var(--fw-medium); color: var(--c-on-surface); }
+.empty-state p   { font-size: var(--fs-base); line-height: 1.5; }
+
+/* ============================================================
+   Bottom sheet
+   ============================================================ */
+.sheet-backdrop {
+  position: fixed;
+  inset: 0;
+  background: var(--c-scrim);
+  z-index: 200;
+  opacity: 0;
+  transition: opacity 0.25s;
+}
+.sheet-backdrop.visible { opacity: 1; }
+
+.bottom-sheet {
+  position: fixed;
+  bottom: 0; left: 0; right: 0;
+  background: var(--c-surface-container);
+  border-radius: var(--r-xl) var(--r-xl) 0 0;
+  z-index: 201;
+  transform: translateY(100%);
+  transition: transform 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+  max-height: 85vh;
+  display: flex;
+  flex-direction: column;
+  padding-bottom: env(safe-area-inset-bottom);
+}
+.bottom-sheet.visible { transform: translateY(0); }
+
+.sheet-handle {
+  width: 32px;
+  height: 4px;
+  background: var(--c-outline-variant);
+  border-radius: 2px;
+  margin: 12px auto 4px;
+  flex-shrink: 0;
+}
+
+.sheet-title {
+  font-size: var(--fs-lg);
+  font-weight: var(--fw-medium);
+  padding: 8px 24px 12px;
+  flex-shrink: 0;
+}
+
+.sheet-body {
+  flex: 1;
+  overflow-y: auto;
+  padding: 0 24px;
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+
+.sheet-section-label {
+  font-size: var(--fs-sm);
+  font-weight: var(--fw-semibold);
+  letter-spacing: 0.8px;
+  text-transform: uppercase;
+  color: var(--c-on-surface-variant);
+  margin-bottom: 4px;
+}
+
+.sheet-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.sheet-search {
+  width: 100%;
+  height: 40px;
+  border: 1px solid var(--c-outline);
+  border-radius: var(--r-md);
+  padding: 0 12px;
+  font-size: var(--fs-base);
+  color: var(--c-on-surface);
+  background: var(--c-input-bg);
+  outline: none;
+  margin-bottom: 8px;
+  transition: border-color 0.15s, box-shadow 0.15s;
+}
+.sheet-search:focus { border-color: var(--c-primary); box-shadow: var(--focus-ring); }
+
+.sheet-option-list {
+  max-height: 180px;
+  overflow-y: auto;
+  border: 1px solid var(--c-outline-variant);
+  border-radius: var(--r-md);
+  overscroll-behavior: contain;
+}
+
+.sheet-option {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 10px 14px;
+  cursor: pointer;
+  font-size: var(--fs-base);
+  transition: background 0.1s;
+  border-bottom: 1px solid var(--c-outline-variant);
+}
+.sheet-option:last-child  { border-bottom: none; }
+.sheet-option:active      { background: var(--c-surface-variant); }
+.sheet-option.selected    { color: var(--c-primary); font-weight: var(--fw-medium); }
+
+.sheet-option-check {
+  width: 20px;
+  height: 20px;
+  flex-shrink: 0;
+  color: var(--c-primary);
+  opacity: 0;
+  transition: opacity 0.1s;
+}
+.sheet-option.selected .sheet-option-check { opacity: 1; }
+
+.sheet-actions {
+  display: flex;
+  justify-content: flex-end;
+  align-items: center;
+  padding: 12px 16px;
+  gap: 8px;
+  border-top: 1px solid var(--c-outline-variant);
+  flex-shrink: 0;
+}
+
+/* ============================================================
+   Toast
+   ============================================================ */
+.toast {
+  position: fixed;
+  bottom: calc(var(--bottom-nav-total) + 16px);
+  left: 50%;
+  transform: translateX(-50%) translateY(8px);
+  background: var(--c-toast-bg);
+  color: var(--c-toast-fg);
+  font-size: var(--fs-base);
+  padding: 12px 20px;
+  border-radius: var(--r-md);
+  z-index: 300;
+  max-width: calc(100vw - 32px);
+  text-align: center;
+  box-shadow: var(--elevation-2);
+  opacity: 0;
+  transition: opacity 0.2s, transform 0.2s;
+  pointer-events: none;
+}
+.toast.visible {
+  opacity: 1;
+  transform: translateX(-50%) translateY(0);
+}
+
+/* ============================================================
+   Placeholder pages (Browse / Sync — fleshed out in later tasks)
+   ============================================================ */
+.placeholder-page {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  height: 100%;
+  gap: 12px;
+  color: var(--c-on-surface-variant);
+  padding: 32px;
+  text-align: center;
+}
+.placeholder-page svg { width: 56px; height: 56px; opacity: 0.35; }
+.placeholder-page h2  { font-size: var(--fs-lg); font-weight: var(--fw-medium); color: var(--c-on-surface); }
+.placeholder-page p   { font-size: var(--fs-base); line-height: 1.5; }
+
+/* ============================================================
+   Stamp detail view
+   ============================================================ */
+.detail-root { display: flex; flex-direction: column; }
+
+.detail-image-section { background: var(--c-surface-variant); }
+
+.detail-image-main {
+  width: 100%;
+  max-height: 320px;
+  object-fit: contain;
+  display: block;
+  cursor: zoom-in;
+  background: var(--c-surface-variant);
+}
+
+.detail-image-placeholder {
+  width: 100%;
+  height: 240px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--c-on-surface-variant);
+  background: var(--c-surface-variant);
+}
+.detail-image-placeholder svg { width: 64px; height: 64px; opacity: 0.4; }
+
+.detail-image-thumbs {
+  display: flex;
+  gap: 8px;
+  padding: 8px 12px;
+  overflow-x: auto;
+  scrollbar-width: none;
+  background: var(--c-surface-container);
+  border-top: 1px solid var(--c-outline-variant);
+}
+.detail-image-thumbs::-webkit-scrollbar { display: none; }
+
+.detail-image-thumb {
+  width: 64px;
+  height: 64px;
+  object-fit: cover;
+  border-radius: var(--r-sm);
+  cursor: pointer;
+  opacity: 0.55;
+  border: 2px solid transparent;
+  flex-shrink: 0;
+  transition: opacity 0.15s, border-color 0.15s;
+}
+.detail-image-thumb.active {
+  opacity: 1;
+  border-color: var(--c-primary);
+  box-shadow: 0 0 12px -3px hsl(var(--brand-h) var(--brand-s) 65% / 0.70);
+}
+
+.detail-content {
+  padding: 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 0;
+}
+
+.detail-identity {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding-bottom: 20px;
+}
+
+.detail-title {
+  font-size: var(--fs-xl);
+  font-weight: var(--fw-medium);
+  line-height: 1.3;
+  color: var(--c-on-surface);
+}
+
+.detail-subtitle { font-size: var(--fs-base); color: var(--c-on-surface-variant); }
+
+.detail-themes { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 4px; }
+
+.detail-theme-chip {
+  font-size: var(--fs-sm);
+  padding: 3px 10px;
+  border-radius: var(--r-full);
+  background: var(--c-secondary-container);
+  color: var(--c-on-secondary-container);
+}
+
+.detail-section {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding: 20px 0;
+  border-top: 1px solid var(--c-outline-variant);
+}
+
+.detail-section-title {
+  font-size: var(--fs-sm);
+  font-weight: var(--fw-semibold);
+  letter-spacing: 0.8px;
+  text-transform: uppercase;
+  color: var(--c-on-surface-variant);
+}
+
+.copies-list { display: flex; flex-direction: column; gap: 8px; }
+
+.copy-row {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  padding: 10px 14px;
+  background: var(--c-surface-variant);
+  border-radius: var(--r-md);
+}
+.copy-row .badge { flex-shrink: 0; margin-top: 2px; }
+
+.copy-info   { display: flex; flex-direction: column; gap: 2px; }
+.copy-condition { font-size: var(--fs-base); font-weight: var(--fw-medium); color: var(--c-on-surface); }
+.copy-meta   { font-size: var(--fs-sm); color: var(--c-on-surface-variant); }
+
+.fields-grid {
+  display: grid;
+  grid-template-columns: auto 1fr;
+  gap: 8px 16px;
+  align-items: baseline;
+}
+
+.field-label { font-size: var(--fs-sm); color: var(--c-on-surface-variant); white-space: nowrap; }
+.field-value { font-size: var(--fs-base); color: var(--c-on-surface); word-break: break-word; }
+
+.detail-description { font-size: var(--fs-base); line-height: 1.6; color: var(--c-on-surface); }
+
+/* ============================================================
+   Lightbox (image tap-to-zoom)
+   ============================================================ */
+.lightbox-overlay {
+  position: fixed;
+  inset: 0;
+  background: var(--c-scrim);
+  z-index: 500;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  opacity: 0;
+  transition: opacity 0.2s;
+  cursor: zoom-out;
+}
+.lightbox-overlay.visible { opacity: 1; }
+.lightbox-img {
+  max-width: 95vw;
+  max-height: 90vh;
+  object-fit: contain;
+  border-radius: var(--r-sm);
+}
+
+/* ============================================================
+   Sync page
+   ============================================================ */
+.sync-page {
+  padding: 24px 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 20px;
+  max-width: 480px;
+  margin: 0 auto;
+}
+
+.sync-status-card {
+  background: var(--c-surface-variant);
+  border-radius: var(--r-lg);
+  padding: 20px;
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+
+.sync-stat { display: flex; flex-direction: column; gap: 4px; }
+
+.sync-stat-label {
+  font-size: var(--fs-sm);
+  font-weight: var(--fw-semibold);
+  letter-spacing: 0.6px;
+  text-transform: uppercase;
+  color: var(--c-on-surface-variant);
+}
+
+.sync-stat-value {
+  font-size: var(--fs-md);
+  font-weight: var(--fw-medium);
+  color: var(--c-on-surface);
+}
+
+.sync-progress-area { display: flex; flex-direction: column; gap: 8px; }
+
+.sync-progress-bar {
+  height: 8px;
+  background: var(--c-surface-variant);
+  border-radius: var(--r-full);
+  overflow: hidden;
+}
+
+.sync-progress-fill {
+  height: 100%;
+  width: 0%;
+  background: var(--c-primary);
+  border-radius: var(--r-full);
+  transition: width 0.3s ease;
+}
+
+.sync-progress-text {
+  font-size: var(--fs-sm);
+  color: var(--c-on-surface-variant);
+  text-align: center;
+}
+
+.sync-btn {
+  width: 100%;
+  height: 52px;
+  font-size: var(--fs-md);
+  border-radius: var(--r-lg);
+}
+
+.sync-help-text {
+  font-size: var(--fs-sm);
+  color: var(--c-on-surface-variant);
+  text-align: center;
+  line-height: 1.6;
+}
+
+/* ============================================================
+   Edit bottom sheet — form styles
+   ============================================================ */
+
+.edit-section {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  padding: 16px 0;
+  border-top: 1px solid var(--c-outline-variant);
+}
+.edit-section:first-child { border-top: none; }
+
+.edit-section-title {
+  font-size: var(--fs-sm);
+  font-weight: var(--fw-semibold);
+  letter-spacing: 0.6px;
+  text-transform: uppercase;
+  color: var(--c-on-surface-variant);
+  margin: 0;
+}
+
+.edit-field-group {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.edit-field-label {
+  font-size: var(--fs-sm);
+  color: var(--c-on-surface-variant);
+}
+
+.edit-input,
+.edit-textarea {
+  width: 100%;
+  background: var(--c-input-bg);
+  border: 2px solid var(--c-outline-variant);
+  border-radius: var(--r-sm);
+  padding: 10px 12px;
+  font-size: var(--fs-base);
+  color: var(--c-on-surface);
+  font-family: var(--font);
+  outline: none;
+  transition: border-color 0.15s, box-shadow 0.15s;
+  box-sizing: border-box;
+}
+
+.edit-input:focus,
+.edit-textarea:focus  { border-color: var(--c-primary); box-shadow: var(--focus-ring); }
+
+.edit-textarea {
+  resize: vertical;
+  min-height: 80px;
+  line-height: 1.5;
+}
+
+.edit-select {
+  width: 100%;
+  background-color: var(--c-input-bg);
+  border: 2px solid var(--c-outline-variant);
+  border-radius: var(--r-sm);
+  padding: 10px 36px 10px 12px;
+  font-size: var(--fs-base);
+  color: var(--c-on-surface);
+  font-family: var(--font);
+  outline: none;
+  transition: border-color 0.15s, box-shadow 0.15s;
+  box-sizing: border-box;
+  appearance: none;
+  -webkit-appearance: none;
+  background-image: var(--c-select-caret);
+  background-repeat: no-repeat;
+  background-position: right 8px center;
+  background-size: 20px;
+  cursor: pointer;
+}
+.edit-select:focus { border-color: var(--c-primary); box-shadow: var(--focus-ring); }
+
+/* The native dropdown list is drawn by the OS, not by this stylesheet, so its
+   own background has to be set here or it renders light-on-light. */
+.edit-select option { background: var(--c-surface-container); color: var(--c-on-surface); }
+
+.edit-toggle-row {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 4px 0;
+}
+
+.edit-toggle {
+  width: 20px;
+  height: 20px;
+  accent-color: var(--c-primary);
+  cursor: pointer;
+  flex-shrink: 0;
+}
+
+.edit-toggle-label {
+  font-size: var(--fs-base);
+  color: var(--c-on-surface);
+  cursor: pointer;
+}
+
+/* Theme picker */
+.edit-theme-search {
+  width: 100%;
+  background: var(--c-input-bg);
+  border: 2px solid var(--c-outline-variant);
+  border-radius: var(--r-sm);
+  padding: 10px 12px;
+  font-size: var(--fs-base);
+  color: var(--c-on-surface);
+  font-family: var(--font);
+  outline: none;
+  transition: border-color 0.15s, box-shadow 0.15s;
+  box-sizing: border-box;
+}
+.edit-theme-search:focus { border-color: var(--c-primary); box-shadow: var(--focus-ring); }
+
+.edit-themes-list {
+  max-height: 200px;
+  overflow-y: auto;
+  border: 1px solid var(--c-outline-variant);
+  border-radius: var(--r-md);
+  overscroll-behavior: contain;
+}
+
+.edit-theme-row {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 10px 14px;
+  border-bottom: 1px solid var(--c-outline-variant);
+}
+.edit-theme-row:last-child { border-bottom: none; }
+
+.edit-theme-cb {
+  width: 18px;
+  height: 18px;
+  accent-color: var(--c-primary);
+  cursor: pointer;
+  flex-shrink: 0;
+}
+
+.edit-theme-label {
+  font-size: var(--fs-base);
+  color: var(--c-on-surface);
+  cursor: pointer;
+  user-select: none;
+}
+
+/* Copies editor */
+.edit-copies-wrapper {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.edit-copies-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.edit-copy-row {
+  display: grid;
+  grid-template-columns: 1fr 64px 1fr 40px;
+  gap: 6px;
+  align-items: start;
+}
+
+.edit-copy-row .edit-select {
+  padding: 8px 28px 8px 8px;
+  font-size: var(--fs-sm);
+  background-size: 16px;
+  background-position: right 5px center;
+}
+
+.edit-copy-row .edit-input {
+  padding: 8px 10px;
+  font-size: var(--fs-sm);
+}
+
+.edit-copy-del {
+  width: 40px;
+  height: 40px;
+  color: var(--c-on-surface-variant);
+}
+
+.edit-copies-add { align-self: flex-start; }
+
+/* ============================================================
+   Sync page — pending changes list
+   ============================================================ */
+
+.pending-section {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.pending-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.pending-title {
+  font-size: var(--fs-md);
+  font-weight: var(--fw-medium);
+  color: var(--c-on-surface);
+}
+
+.pending-select-all {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: var(--fs-sm);
+  color: var(--c-on-surface-variant);
+  cursor: pointer;
+  user-select: none;
+}
+
+.pending-select-all input[type="checkbox"] {
+  width: 18px;
+  height: 18px;
+  accent-color: var(--c-primary);
+  cursor: pointer;
+  flex-shrink: 0;
+}
+
+.pending-list {
+  display: flex;
+  flex-direction: column;
+  border: 1px solid var(--c-outline-variant);
+  border-radius: var(--r-lg);
+  overflow: hidden;
+}
+
+.pending-item {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 12px 14px;
+  background: var(--c-surface-container);
+  border-bottom: 1px solid var(--c-outline-variant);
+}
+.pending-item:last-child { border-bottom: none; }
+
+.pending-cb {
+  width: 20px;
+  height: 20px;
+  accent-color: var(--c-primary);
+  cursor: pointer;
+  flex-shrink: 0;
+}
+
+.pending-thumb {
+  width: 52px;
+  height: 52px;
+  border-radius: var(--r-sm);
+  object-fit: cover;
+  background: var(--c-surface-variant);
+  flex-shrink: 0;
+}
+
+.pending-thumb-placeholder {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--c-on-surface-variant);
+}
+.pending-thumb-placeholder svg { width: 24px; height: 24px; opacity: 0.4; }
+
+.pending-info {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.pending-stamp-name {
+  font-size: var(--fs-base);
+  font-weight: var(--fw-medium);
+  color: var(--c-on-surface);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.pending-stamp-scott {
+  font-size: var(--fs-sm);
+  color: var(--c-on-surface-variant);
+}
+
+.pending-changed-fields {
+  font-size: var(--fs-sm);
+  color: var(--c-primary);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.pending-queued-at {
+  font-size: var(--fs-xs);
+  color: var(--c-on-surface-variant);
+  margin-top: 2px;
+}
