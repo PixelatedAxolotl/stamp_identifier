@@ -1,0 +1,99 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <!-- Fallback only. app.js overwrites this from --c-top-bar-top once the
+       stylesheet is parsed, so the status bar follows the knob in main.css. -->
+  <meta name="theme-color" content="#291f3d">
+  <meta name="mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+  <title>Stamp Collection</title>
+  <link rel="manifest" href="/manifest.json">
+  <link rel="stylesheet" href="/css/main.css">
+</head>
+<body>
+
+  <header class="top-app-bar" id="top-bar">
+    <button class="icon-btn hidden" id="back-btn" aria-label="Back">
+      <svg viewBox="0 0 24 24" fill="currentColor"><path d="M20 11H7.83l5.59-5.59L12 4l-8 8 8 8 1.41-1.41L7.83 13H20v-2z"/></svg>
+    </button>
+    <h1 class="top-bar-title" id="page-title">Collection</h1>
+    <div class="top-bar-actions" id="header-actions"></div>
+  </header>
+
+  <main id="main-content">
+    <div id="view-gallery" class="view"></div>
+    <div id="view-detail"  class="view hidden"></div>
+    <div id="view-sync"    class="view hidden"></div>
+  </main>
+
+  <nav class="bottom-nav" id="bottom-nav">
+    <a href="#/gallery" class="nav-item active" data-page="gallery">
+      <span class="nav-indicator"></span>
+      <svg class="nav-icon" viewBox="0 0 24 24" fill="currentColor">
+        <path d="M3 3h8v8H3zm0 10h8v8H3zm10-10h8v8h-8zm0 10h8v8h-8z"/>
+      </svg>
+      <span class="nav-label">Collection</span>
+    </a>
+
+    <!-- Capture sits in the middle nav slot so it is reachable from any page.
+         capture="environment" makes iOS open the rear camera directly, and the
+         file goes to the server untouched — no canvas, no re-encode. -->
+    <button class="nav-capture" id="capture-fab" type="button" aria-label="Capture stamp photo">
+      <span class="nav-capture-inner">
+        <svg viewBox="0 0 24 24" fill="currentColor">
+          <path d="M9 2 7.17 4H4a2 2 0 0 0-2 2v12a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2V6a2 2 0 0 0-2-2h-3.17L15 2H9zm3 5a5 5 0 1 1 0 10 5 5 0 0 1 0-10zm0 2a3 3 0 1 0 0 6 3 3 0 0 0 0-6z"/>
+        </svg>
+      </span>
+      <span class="fab-badge hidden" id="capture-badge"></span>
+    </button>
+
+    <a href="#/sync" class="nav-item" data-page="sync">
+      <span class="nav-indicator"></span>
+      <svg class="nav-icon" viewBox="0 0 24 24" fill="currentColor">
+        <path d="M12 4V1L8 5l4 4V6c3.31 0 6 2.69 6 6 0 1.01-.25 1.97-.7 2.8l1.46 1.46C19.54 15.03 20 13.57 20 12c0-4.42-3.58-8-8-8zm0 14c-3.31 0-6-2.69-6-6 0-1.01.25-1.97.7-2.8L5.24 7.74C4.46 8.97 4 10.43 4 12c0 4.42 3.58 8 8 8v3l4-4-4-4v3z"/>
+      </svg>
+      <span class="nav-label">Sync</span>
+    </a>
+  </nav>
+
+  <input type="file" id="capture-input" accept="image/jpeg,image/*" capture="environment" hidden>
+
+  <!-- Filter bottom sheet -->
+  <div class="sheet-backdrop hidden" id="filter-backdrop"></div>
+  <div class="bottom-sheet hidden" id="filter-sheet">
+    <div class="sheet-handle"></div>
+    <h2 class="sheet-title">Filter &amp; Sort</h2>
+    <div class="sheet-body" id="filter-sheet-body"></div>
+    <div class="sheet-actions">
+      <button class="btn-text" id="filter-clear-btn">Clear all</button>
+      <button class="btn-filled" id="filter-apply-btn">Apply</button>
+    </div>
+  </div>
+
+  <!-- Edit bottom sheet -->
+  <div class="sheet-backdrop hidden" id="edit-backdrop"></div>
+  <div class="bottom-sheet hidden" id="edit-sheet">
+    <div class="sheet-handle"></div>
+    <h2 class="sheet-title">Edit Stamp</h2>
+    <div class="sheet-body" id="edit-sheet-body"></div>
+    <div class="sheet-actions">
+      <button class="btn-text" id="edit-cancel-btn">Cancel</button>
+      <button class="btn-filled" id="edit-save-btn">Save</button>
+    </div>
+  </div>
+
+  <!-- Toast notification -->
+  <div class="toast hidden" id="toast"></div>
+
+  <script type="module" src="/js/app.js"></script>
+
+  <script>
+    if ('serviceWorker' in navigator) {
+      navigator.serviceWorker.register('/sw.js');
+    }
+  </script>
+</body>
+</html>
