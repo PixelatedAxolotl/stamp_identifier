@@ -9,7 +9,7 @@ from logger import logger
 
 engine = create_engine(
     DATABASE_URL,
-    echo=True,
+    echo=False,  #set True to log every statement; noisy and slow on bulk reads like /api/sync/data
 )
 
 # Debug: log the effective database URL and existing tables at import time
