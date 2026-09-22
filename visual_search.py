@@ -42,6 +42,7 @@ from dataclasses import dataclass
 import cv2
 import numpy as np
 
+import autocrop
 from config import VISUAL_CACHE_FILE, VISUAL_DUP_THRESHOLD, VISUAL_NORM_SIZE
 from logger import logger
 
@@ -63,6 +64,33 @@ _MIN_MATCHES_FOR_RANSAC = 10
 # Reprojection tolerance, in normalised pixels, for a match to count as an
 # inlier of the fitted homography.
 _RANSAC_REPROJ = 5.0
+
+# Subject normalisation — see _subject_box.
+#
+# Resolution the subject search runs at. The box only needs to be right to a
+# few pixels before it is mapped back up, and working small keeps this in the
+# low milliseconds even on a 12 MP phone photo.
+_SUBJECT_WORK = 256
+
+# Detail-energy percentile that separates stamp from mat. The mat is the
+# majority of a loosely framed photo, so the cut sits high.
+_SUBJECT_PERCENTILE = 80
+
+# Margin kept around the detected subject, as a fraction of its own size. A
+# stamp's perforated edge carries real keypoints, so the box is not tightened
+# onto the design alone.
+_SUBJECT_PAD = 0.04
+
+# Only trim when the subject is clearly smaller than the frame. Above this
+# share the picture is already a tight crop, and trimming it further would
+# move the two sides of a comparison apart rather than together — the failure
+# this whole step exists to prevent.
+_SUBJECT_MAX_AREA = 0.80
+
+# Bumped whenever a change here would produce different fingerprints for the
+# same file. Cached rows carrying another version are rebuilt rather than
+# compared against fresh ones, which would silently score near zero.
+_FINGERPRINT_VERSION = 2
 
 
 @dataclass(frozen=True)
@@ -116,14 +144,111 @@ class Match:
 # Fingerprinting
 # ----------------------------------------------------------------------
 
+def _detail_box(gray: np.ndarray) -> tuple[int, int, int, int] | None:
+    """Cheap subject box: the largest connected region of gradient energy.
+
+    A stamp is detailed and a mat is flat. This is milliseconds and always
+    answers, which is what makes it usable both as the gate in front of the
+    expensive detector and as the fallback behind it.
+
+    Returns None when the detail already fills the frame (a tight crop, so
+    there is nothing to gain) or when there is no detail to find.
+    """
+    h, w = gray.shape[:2]
+    scale = _SUBJECT_WORK / max(h, w)
+    if scale < 1.0:
+        small = cv2.resize(gray, (max(8, int(w * scale)), max(8, int(h * scale))),
+                           interpolation=cv2.INTER_AREA)
+    else:
+        small, scale = gray, 1.0
+
+    gx = cv2.Sobel(small, cv2.CV_32F, 1, 0, ksize=3)
+    gy = cv2.Sobel(small, cv2.CV_32F, 0, 1, ksize=3)
+    # Blurring the magnitude turns per-pixel texture into a region, so the
+    # components below are areas of detail rather than strings of edge pixels.
+    energy = cv2.GaussianBlur(cv2.magnitude(gx, gy), (0, 0), 3)
+    threshold = max(float(np.percentile(energy, _SUBJECT_PERCENTILE)) * 0.5, 1.0)
+    mask = (energy > threshold).astype(np.uint8)
+
+    kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (5, 5))
+    mask = cv2.morphologyEx(mask, cv2.MORPH_CLOSE, kernel, iterations=2)
+
+    count, _labels, stats, _centroids = cv2.connectedComponentsWithStats(mask, 8)
+    if count <= 1:
+        return None                     # no detail anywhere; nothing to trim to
+
+    largest = 1 + int(np.argmax(stats[1:, cv2.CC_STAT_AREA]))
+    x, y, bw, bh, _area = stats[largest]
+
+    inv = 1.0 / scale
+    x1 = max(0, int((x - bw * _SUBJECT_PAD) * inv))
+    y1 = max(0, int((y - bh * _SUBJECT_PAD) * inv))
+    x2 = min(w, int((x + bw * (1 + _SUBJECT_PAD)) * inv))
+    y2 = min(h, int((y + bh * (1 + _SUBJECT_PAD)) * inv))
+
+    if x2 - x1 < 16 or y2 - y1 < 16:
+        return None                     # a speck, not a stamp
+    if (x2 - x1) * (y2 - y1) >= _SUBJECT_MAX_AREA * w * h:
+        return None                     # already a tight crop; leave it alone
+    return x1, y1, x2, y2
+
+
+def _subject_box(colour: np.ndarray, gray: np.ndarray) -> tuple[int, int, int, int] | None:
+    """Bounding box of the stamp within a frame, or None to use the whole frame.
+
+    Normalising the *frame* to a fixed size is not enough, because it leaves
+    the stamp itself at whatever scale the photographer framed it. A tight crop
+    and a photo of the same stamp on a wide mat then produce descriptors at
+    subject scales that differ several times over, and ORB's pyramid does not
+    stretch that far. Measured over the collection, moving a stamp from 95% of
+    the frame to 50% cut retrieval from 20/20 to 12/20 and the match score from
+    0.47 to 0.017. That is the "Find Similar misses the obvious match" failure,
+    because storage/images holds tight crops (autocrop declines on 53 of 60 of
+    them precisely because they are already tight) while a capture it declined
+    keeps its whole mat — median subject fill in storage/incoming is 47%.
+
+    Two detectors, because neither alone is enough:
+
+        _detail_box   milliseconds, always answers, approximate
+        autocrop      ~390ms, materially more accurate (20/20 against 15/20 at
+                      the harshest framing), but declines on roughly half of
+                      real loose captures — exactly the frames needing it most
+
+    So the cheap one gates and backstops the expensive one: it decides whether
+    the frame is loose enough to be worth any further work, autocrop is asked
+    for a better box when it is, and its answer is used when it declines.
+    Collection images, which are overwhelmingly tight, pay only the cheap check.
+    """
+    rough = _detail_box(gray)
+    if rough is None:
+        return None                     # already tight, or no subject to find
+
+    try:
+        fine = autocrop.detect_in(colour)
+    except Exception as e:
+        logger.debug(f"visual_search: autocrop declined to run: {e}")
+        fine = None
+    if fine is None:
+        return rough
+
+    x1, y1, x2, y2 = fine
+    if x2 - x1 < 16 or y2 - y1 < 16:
+        return rough
+    return fine
+
+
 def _load_normalized(path: str) -> np.ndarray | None:
-    """Read an image as greyscale, scaled so its longest edge is
-    VISUAL_NORM_SIZE.
+    """Read an image as greyscale, trimmed to the stamp and scaled so its
+    longest edge is VISUAL_NORM_SIZE.
 
     Normalising size is what makes descriptors comparable at all: the
     collection holds everything from 222px crops to 4000px phone captures, and
     ORB keypoint scale is measured in pixels. Aspect ratio is preserved, so a
     stamp is never squashed into matching a differently-shaped one.
+
+    The trim (see _subject_box) is what makes that normalisation mean the same
+    thing for both sides of a comparison — without it the frame is normalised
+    but the stamp inside it is not.
     """
     # cv2.imread cannot open a path containing non-ASCII characters on Windows.
     # Reading the bytes ourselves and decoding from memory sidesteps the
@@ -136,10 +261,19 @@ def _load_normalized(path: str) -> np.ndarray | None:
     if data.size == 0:
         return None
 
-    img = cv2.imdecode(data, cv2.IMREAD_GRAYSCALE)
-    if img is None:
+    # Decoded in colour, then converted, because the subject detectors need
+    # colour: autocrop segments the mat in Lab space. Matching itself only ever
+    # sees the greyscale result.
+    colour = cv2.imdecode(data, cv2.IMREAD_COLOR)
+    if colour is None:
         logger.warning(f"visual_search: cannot decode {path}")
         return None
+    img = cv2.cvtColor(colour, cv2.COLOR_BGR2GRAY)
+
+    box = _subject_box(colour, img)
+    if box is not None:
+        x1, y1, x2, y2 = box
+        img = img[y1:y2, x1:x2]
 
     h, w = img.shape[:2]
     longest = max(h, w)
@@ -194,7 +328,8 @@ CREATE TABLE IF NOT EXISTS fingerprints (
     phash      INTEGER NOT NULL,
     kp         BLOB,
     orb        BLOB,
-    rows       INTEGER NOT NULL DEFAULT 0
+    rows       INTEGER NOT NULL DEFAULT 0,
+    version    INTEGER NOT NULL DEFAULT 0
 );
 """
 
@@ -212,9 +347,31 @@ def _connect() -> sqlite3.Connection:
             os.makedirs(directory, exist_ok=True)
         conn = sqlite3.connect(VISUAL_CACHE_FILE)
         conn.execute(_SCHEMA)
+        _migrate(conn)
         conn.commit()
         _local.conn = conn
     return conn
+
+
+def _migrate(conn) -> None:
+    """Bring an older cache file up to the current schema.
+
+    The cache is derived data, so the cheap fix is always available: anything
+    that cannot be carried forward is dropped and recomputed. A cache written
+    before the version column existed holds fingerprints from before subject
+    normalisation, and those are not comparable with current ones — a v1 row
+    scored against a v2 query reads as "not the same stamp" rather than as an
+    error, which is the worst way for this to fail.
+    """
+    columns = {row[1] for row in conn.execute("PRAGMA table_info(fingerprints)")}
+    if "version" in columns:
+        return
+    conn.execute("DROP TABLE IF EXISTS fingerprints")
+    conn.execute(_SCHEMA)
+    logger.info(
+        "visual_search: cache predates subject normalisation — cleared, it "
+        "will rebuild as images are searched (or run tools.build_visual_cache)"
+    )
 
 
 def _key(path: str) -> str:
@@ -276,7 +433,8 @@ def get_fingerprint(path: str) -> Fingerprint | None:
 
     conn = _connect()
     row = conn.execute(
-        "SELECT mtime, phash, kp, orb, rows FROM fingerprints WHERE path = ?", (key,)
+        "SELECT mtime, phash, kp, orb, rows FROM fingerprints "
+        "WHERE path = ? AND version = ?", (key, _FINGERPRINT_VERSION)
     ).fetchone()
     if row is not None and abs(row[0] - mtime) < 1e-6:
         coords, desc = _unpack(row[2], row[3], row[4])
@@ -293,9 +451,10 @@ def get_fingerprint(path: str) -> Fingerprint | None:
 def _store(conn, key: str, mtime: float, fp: Fingerprint) -> None:
     kp_blob, orb_blob, rows = _pack(fp)
     conn.execute(
-        "INSERT OR REPLACE INTO fingerprints (path, mtime, phash, kp, orb, rows) "
-        "VALUES (?, ?, ?, ?, ?, ?)",
-        (key, mtime, _phash_to_db(fp.phash), kp_blob, orb_blob, rows),
+        "INSERT OR REPLACE INTO fingerprints "
+        "(path, mtime, phash, kp, orb, rows, version) VALUES (?, ?, ?, ?, ?, ?, ?)",
+        (key, mtime, _phash_to_db(fp.phash), kp_blob, orb_blob, rows,
+         _FINGERPRINT_VERSION),
     )
 
 
@@ -324,7 +483,8 @@ def build_cache(paths, progress=None) -> tuple[int, int]:
             continue
 
         row = conn.execute(
-            "SELECT mtime FROM fingerprints WHERE path = ?", (key,)
+            "SELECT mtime FROM fingerprints WHERE path = ? AND version = ?",
+            (key, _FINGERPRINT_VERSION),
         ).fetchone()
         if row is not None and abs(row[0] - mtime) < 1e-6:
             if progress:
@@ -369,7 +529,8 @@ def load_fingerprints(paths) -> dict[str, Fingerprint]:
         placeholders = ",".join("?" * len(chunk))
         for row in conn.execute(
             f"SELECT path, mtime, phash, kp, orb, rows FROM fingerprints "
-            f"WHERE path IN ({placeholders})", chunk
+            f"WHERE version = ? AND path IN ({placeholders})",
+            [_FINGERPRINT_VERSION, *chunk],
         ):
             original = by_key[row[0]]
             try:
