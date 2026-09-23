@@ -82,6 +82,9 @@ class HistoryPanel(Panel):
 
         self._labels: dict[str, QLabel] = {}
         self._pending: set[str] = set()   # placeholders not yet decoded
+        # File mtime each thumbnail was decoded from, so _rescan can tell a
+        # rewritten image (auto-crop, crop, revert) from an unchanged one.
+        self._decoded_mtime: dict[str, float] = {}
 
         scroll = QScrollArea()
         scroll.setWidgetResizable(True)
@@ -153,6 +156,7 @@ class HistoryPanel(Panel):
         and moved out of the incoming folder, so the strip only shows images
         still waiting to be assigned."""
         self._pending.discard(path)
+        self._decoded_mtime.pop(path, None)
         label = self._labels.pop(path, None)
         if label:
             label.setParent(None)
@@ -162,6 +166,9 @@ class HistoryPanel(Panel):
         label = self._labels.get(path)
         if label:
             self._pending.discard(path)
+            # The caller already decoded the new version, so record its mtime —
+            # otherwise the next rescan would decode the same file again.
+            self._decoded_mtime[path] = self._safe_mtime(path)
             label.setPixmap(
                 pixmap.scaled(
                     THUMB_SIZE[0], THUMB_SIZE[1],
@@ -293,6 +300,130 @@ class HistoryPanel(Panel):
         if INCOMING_DIR not in self._watcher.directories():
             self._watcher.addPath(INCOMING_DIR)
 
+    def stop_watching(self):
+        """Stop the phone poll thread. Called from Canvas.closeEvent so the COM
+        apartment is torn down before Qt shuts the process down under it."""
+        self._phone_watcher.stop()
+
+    # ------------------------------------------------------------------
+    # Internal — phone import (USB)
+    # ------------------------------------------------------------------
+
+    def _build_phone_controls(self) -> QWidget:
+        """The 'Watch phone' toggle strip above the thumbnail list.
+
+        Imports land in INCOMING_DIR, so nothing here touches the strip
+        directly — the folder watcher below notices them like any other new
+        file, whether they arrived over USB or from the phone app's uploader.
+        """
+        bar = QWidget()
+        row = QHBoxLayout(bar)
+        row.setContentsMargins(4, 2, 4, 2)
+        row.setSpacing(6)
+
+        self._watch_btn = QPushButton("Watch phone")
+        self._watch_btn.setCheckable(True)
+        self._watch_btn.setFocusPolicy(Qt.FocusPolicy.NoFocus)
+        self._watch_btn.setToolTip(
+            "Poll a USB-connected iPhone and import new camera-roll photos"
+        )
+        self._watch_btn.toggled.connect(self._on_watch_toggled)
+        row.addWidget(self._watch_btn)
+
+        self._watch_status = QLabel("Off")
+        self._watch_status.setObjectName("phoneWatchStatus")
+        # Ignored horizontal policy: device names are long and this strip is
+        # narrow, so the label must be free to shrink rather than forcing the
+        # whole panel wider.
+        self._watch_status.setSizePolicy(
+            QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Preferred
+        )
+        row.addWidget(self._watch_status, 1)
+
+        # Named _phone_watcher, not _watcher: this class already has a
+        # QFileSystemWatcher on that attribute, assigned after this runs.
+        self._phone_watcher = PhoneWatcher(parent=self)
+        self._phone_watcher.status_changed.connect(self._on_watch_status)
+        return bar
+
+    def _on_watch_toggled(self, checked: bool):
+        if checked:
+            self._phone_watcher.start()
+        else:
+            self._phone_watcher.stop()
+
+    def _on_watch_status(self, text: str):
+        # Full text in the tooltip because the label is free to elide/clip.
+        self._watch_status.setText(text)
+        self._watch_status.setToolTip(text)
+
+    # ------------------------------------------------------------------
+    # Internal — folder watching
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    def _safe_mtime(path: str) -> float:
+        try:
+            return os.path.getmtime(path)
+        except OSError:
+            return 0.0   # vanished between listing and sorting; sort it last
+
+    def _rescan(self):
+        """Reconcile the strip with what is actually in the incoming folder.
+
+        Runs after the debounce timer rather than on every filesystem event.
+        Only the .jpg suffix is listed, matching load_history() — the upload
+        endpoint writes to a .part file and renames, so a partially written
+        upload is never visible here.
+        """
+        try:
+            on_disk = {
+                os.path.join(INCOMING_DIR, f)
+                for f in os.listdir(INCOMING_DIR)
+                if f.lower().endswith(".jpg")
+            }
+        except OSError:
+            return
+
+        known = set(self._labels)
+
+        for path in known - on_disk:
+            self.remove_thumbnail(path)
+
+        # Re-decode anything rewritten since last drawn. Auto-crop is the reason
+        # this is needed: a phone import or PWA upload publishes the file, this
+        # rescan is debounced by 300ms, and the crop that follows takes longer
+        # than that — so the thumbnail is drawn from the uncropped file and
+        # would otherwise stay stale until the next launch. It also covers a
+        # crop or revert applied from a second process.
+        for path in known & on_disk:
+            decoded = self._decoded_mtime.get(path)
+            # Only images already on screen. A placeholder that has never been
+            # decoded stays pending and is picked up by _load_visible when it is
+            # scrolled to, reading the file as it is then — forcing it here
+            # would decode the whole strip on every rescan.
+            if decoded is not None and self._safe_mtime(path) != decoded:
+                self._pending.add(path)
+                self._load(path)
+
+        added = on_disk - known
+        if added:
+            # Oldest first — each insert goes to index 0, so the newest photo
+            # ends up at the top of the strip.
+            ordered = sorted(added, key=self._safe_mtime)
+            if len(ordered) > _EAGER_DECODE_LIMIT:
+                for path in ordered:
+                    self._layout.insertWidget(0, self._make_label(path))
+                self._load_visible()
+            else:
+                for path in ordered:
+                    self.add_thumbnail(path)
+
+        # A watched directory can be dropped when it is replaced rather than
+        # modified; re-arm so later uploads still register.
+        if INCOMING_DIR not in self._watcher.directories():
+            self._watcher.addPath(INCOMING_DIR)
+
     # ------------------------------------------------------------------
     # Internal — lazy loading
     # ------------------------------------------------------------------
@@ -388,6 +519,9 @@ class HistoryPanel(Panel):
         label = self._labels.get(path)
         if label is None:
             return
+        # Remember which version of the file this pixmap came from, so _rescan
+        # can spot the image being rewritten underneath us.
+        self._decoded_mtime[path] = self._safe_mtime(path)
         label.setPixmap(
             load_pixmap(path).scaled(
                 THUMB_SIZE[0], THUMB_SIZE[1],
